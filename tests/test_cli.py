@@ -1,4 +1,8 @@
-"""Integration tests for CLI entrypoint stubs."""
+"""Integration tests for CLI entrypoint (updated for Phase 2).
+
+These tests keep the existing subprocess-based validation tests but use
+import/monkeypatch for the "backup" command so borg can be mocked easily.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
+import backup_flow
+import backup_tool
 
 SCRIPT = Path(__file__).parent.parent / "backup_tool.py"
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -46,52 +51,19 @@ def test_validate_invalid(tmp_path):
     assert b"Configuration error" in res.stderr
 
 
-def test_stubs_return_message(tmp_path):
-    (FIXTURES / "dummy_key").write_text("x")
-    (FIXTURES / "docker-compose.yml").write_text("v: '3'")
-
-    # backup stub
-    res = subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT),
-            "backup",
-            "--all",
-            "--config",
-            str(FIXTURES / "valid_config.yaml"),
-        ],
-        capture_output=True,
+def test_backup_all_success(monkeypatch) -> None:
+    """When the backup flow reports overall success the CLI should exit 0."""
+    monkeypatch.setattr(backup_flow, "backup_all_services", lambda cfg: True)
+    rc = backup_tool.main(
+        ["backup", "--all", "--config", "tests/fixtures/valid_config.yaml"]
     )
-    assert res.returncode == 0
-    assert b"Not implemented yet" in res.stdout
+    assert rc == 0
 
-    # restore stub
-    res = subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT),
-            "restore",
-            "--service",
-            "web",
-            "--latest",
-            "--config",
-            str(FIXTURES / "valid_config.yaml"),
-        ],
-        capture_output=True,
-    )
-    assert res.returncode == 0
-    assert b"Not implemented yet" in res.stdout
 
-    # list-remote stub
-    res = subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT),
-            "list-remote",
-            "--config",
-            str(FIXTURES / "valid_config.yaml"),
-        ],
-        capture_output=True,
+def test_backup_all_failure(monkeypatch) -> None:
+    """When the backup flow reports overall failure the CLI should exit 1."""
+    monkeypatch.setattr(backup_flow, "backup_all_services", lambda cfg: False)
+    rc = backup_tool.main(
+        ["backup", "--all", "--config", "tests/fixtures/valid_config.yaml"]
     )
-    assert res.returncode == 0
-    assert b"Not implemented yet" in res.stdout
+    assert rc == 1

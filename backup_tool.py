@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+import backup_flow
 from config_loader import load_config
 from errors import ConfigError
 
@@ -93,7 +94,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     config_path = Path(config_value)
 
     try:
-        cfg = load_config(str(config_path))
+        config = load_config(str(config_path))
     except ConfigError as e:
         _exit_with_config_error(e)
     except Exception as e:  # pragma: no cover - unexpected
@@ -104,9 +105,65 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("Configuration is valid")
         return 0
 
-    # Stubs for other commands - validate first then inform not implemented
-    print("Not implemented yet")
-    return 0
+    if args.command == "backup":
+        try:
+            results = backup_flow.backup_all_services(config)
+        except Exception as e:  # pragma: no cover - unexpected runtime error
+            print(f"Unexpected error during backup: {e}", file=sys.stderr)
+            return 2
+
+        # Normalize results into iterable of (service, bool)
+        service_results: list[tuple[str, bool]] = []
+
+        if isinstance(results, dict):
+            service_results = list(results.items())
+        elif isinstance(results, (list, tuple)):
+            # Could be list of (service, bool) or list of service names
+            if all(isinstance(x, tuple) and len(x) >= 2 for x in results):
+                service_results = [(str(k), bool(v)) for k, v in results]
+            else:
+                service_results = [(str(s), True) for s in results]
+        elif isinstance(results, bool):
+            # Only overall status provided; try to enumerate services from config
+            try:
+                services = list(config.get("services", {}).keys())  # type: ignore[attr-defined]
+            except Exception:
+                services = []
+            service_results = [(s, bool(results)) for s in services]
+        else:
+            # Fallback: try to treat as mapping-like
+            try:
+                service_results = list(results.items())  # type: ignore[attr-defined]
+            except Exception:
+                service_results = []
+
+        any_failed = False
+
+        if service_results:
+            for svc, ok in service_results:
+                status = "success" if ok else "failed"
+                print(f"{svc}: {status}")
+                if not ok:
+                    any_failed = True
+        else:
+            # No per-service information available; use overall boolean if possible
+            if isinstance(results, bool):
+                if results:
+                    print("Backup completed")
+                    return 0
+                else:
+                    print("Backup completed with failures")
+                    return 1
+            # Unknown result shape - consider this a failure
+            print("Backup completed with failures")
+            return 1
+
+        if any_failed:
+            print("Backup completed with failures")
+            return 1
+
+        print("Backup completed")
+        return 0
 
 
 if __name__ == "__main__":
