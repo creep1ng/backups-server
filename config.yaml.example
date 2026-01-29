@@ -12,8 +12,11 @@ storage_box:
   # Remote host where the Borg repository is accessible
   host: "u12345.your-storagebox.example"
 
-  # Optional SSH port (default 22)
-  port: 22
+  # See docs/storage-setup.md for full instructions to prepare the remote
+  # storage box, initialize a Borg repository, and configure encryption keys.
+
+  # Optional SSH port (default 23)
+  port: 23
 
   # SSH user for connecting to the storage box
   user: "u12345"
