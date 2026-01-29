@@ -39,20 +39,24 @@ Orchestration
 5. Regardless of borg success, `backup_service` calls `commands.run_hooks(post_cmds, "post")` — post-hooks are attempted even if the backup failed. Post-hook failures are logged and do not change the success state returned by `backup_service` if the borg step already failed (but they are recorded via logs and can be included in state metadata in future iterations).
 6. If borg succeeded, `backup_service` calls `state_store.update_last_success_archive(service_name, archive_name)` to persist the artifact identifier. An inability to persist state is treated as an overall failure for the service.
 
-# Simple ASCII flow (decision points)
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CLI as CLI / User
+    participant Orchestrator as backup_flow.py
+    participant Service as Service (container / filesystem)
+    participant Borg as Borg (borg create)
+    participant State as StateStore (state_store.py)
 
-    [start] -> discover_paths -> pre-hooks
-       |            |            |
-       |            |         pre-fail -> [abort service]
-       |            v
-       |        borg.create
-       |         /   \
-    borg-fail    borg-ok
-       |            |
-       v            v
-    post-hooks -> update state (only on borg-ok)
-       |
-    [finish]
+    CLI->>Orchestrator: start backup (service list)
+    Orchestrator->>Service: discover paths & mounts
+    Orchestrator->>Service: run pre-hooks
+    Orchestrator->>Borg: borg create (archive)
+    Borg-->>Orchestrator: creation result
+    Orchestrator->>Service: run post-hooks
+    Orchestrator->>State: update last successful archive id
+    Orchestrator-->>CLI: return success/failure
+```
 
 # Error handling and semantics
 
