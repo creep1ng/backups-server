@@ -11,4 +11,6 @@ Refer to the following detailed guides (implementation details):
 | Local state persistence — implementation details | Implementation details for the per-service state store and state file schema. | ./implementation-details/state-store.md |
 | Backup orchestration — implementation details | Implementation details for the backup orchestration flow, hooks, and state updates. | ./implementation-details/backup-flow.md |
 
+| Storage box setup — operator guide | Step-by-step instructions to prepare a remote host as a Borg storage box and manage repo keys and passphrases. | ./storage-setup.md |
+
 Use these guides when making changes to the corresponding modules or when writing tests that need to stub or mock behaviors.
