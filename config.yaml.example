@@ -1,0 +1,109 @@
+# Example configuration for backups-server
+#
+# This file demonstrates all supported top-level keys and common options.
+# For full syntax and validation rules, see: ./docs/configuration-syntax.md
+
+version: 1
+
+# ---------------------------------------------------------------------------
+# Storage box (remote Borg repository host and SSH settings)
+# ---------------------------------------------------------------------------
+storage_box:
+  # Remote host where the Borg repository is accessible
+  host: "u12345.your-storagebox.example"
+
+  # Optional SSH port (default 22)
+  port: 22
+
+  # SSH user for connecting to the storage box
+  user: "u12345"
+
+  # Path to a local private key file used for SSH (must be readable by the process)
+  ssh_key_path: "/home/backup/.ssh/id_ed25519"
+
+  # Remote path under the account where the borg repository lives
+  repo_path: "/home/u12345/borg-repo"
+
+# ---------------------------------------------------------------------------
+# Borg global options
+# ---------------------------------------------------------------------------
+borg:
+  # Archive name template. Recommended to include the service and a timestamp.
+  # Placeholders supported by Borg can be used (for example {now:%Y-%m-%dT%H:%M:%S}).
+  archive_name_template: "{service}-{now:%Y-%m-%dT%H:%M:%S}"
+
+  # Optional list of extra arguments passed to borg create (example: --stats)
+  extra_args:
+    - "--stats"
+
+  # Optional files cache setting; consult Borg docs for valid values
+  files_cache: "ctime,size,inode"
+
+# ---------------------------------------------------------------------------
+# Compression settings
+# ---------------------------------------------------------------------------
+compression:
+  # Algorithm: supported values depend on your Borg installation.
+  # Common values: zstd, lz4, zlib, lzma, none
+  algorithm: "zstd"
+
+  # Compression level (varies by algorithm); keep within Borg-recommended ranges
+  level: 5
+
+# ---------------------------------------------------------------------------
+# Services to back up
+# Each service entry describes the compose file(s), optional env files,
+# explicit extra paths and any hooks or streams to include in the backup.
+# See ./docs/configuration-syntax.md for detailed rules and examples.
+# ---------------------------------------------------------------------------
+services:
+  - name: "nextcloud"
+    # Path to the docker-compose YAML that describes the service
+    compose_file: "/srv/nextcloud/docker-compose.yml"
+
+    # Optional list of env files referenced by the compose project
+    env_files:
+      - "/srv/nextcloud/.env"
+
+    # Optional explicit host paths to include in the backup
+    extra_paths:
+      - "/srv/nextcloud/data"
+
+    # Optional backup hooks executed around the snapshot operation
+    backup_commands:
+      pre:
+        - "docker compose -f /srv/nextcloud/docker-compose.yml exec -T db sh -lc 'pg_dumpall -U postgres > /tmp/all.sql'"
+      post:
+        - "docker compose -f /srv/nextcloud/docker-compose.yml exec -T db sh -lc 'rm -f /tmp/all.sql'"
+
+    # Optional restore hooks
+    restore_commands:
+      pre: []
+      post: []
+
+    # Streams: for services that require streaming output into borg (no temp file)
+    streams:
+      - name: "db.sql"
+        # Use a list form for commands where possible (recommended). The
+        # implementation currently accepts shell-strings for hooks; streams
+        # should be an array form to avoid shell parsing ambiguity.
+        command: ["docker", "compose", "-f", "/srv/nextcloud/docker-compose.yml", "exec", "-T", "db", "pg_dumpall", "-U", "postgres"]
+
+# ---------------------------------------------------------------------------
+# Example minimal service with no hooks and no streams
+# ---------------------------------------------------------------------------
+  - name: "simple-service"
+    compose_file: "./docker-compose.yml"
+    env_files: []
+    extra_paths: []
+    backup_commands: { pre: [], post: [] }
+    restore_commands: { pre: [], post: [] }
+    streams: []
+
+# ---------------------------------------------------------------------------
+# Notes and links
+# - This example is illustrative. See ./docs/configuration-syntax.md for the
+#   canonical configuration schema and validation rules.
+# - Hooks are executed by the tool; pre-hooks abort the backup on failure,
+#   post-hooks are attempted even when the borg step fails (they are logged).
+# ---------------------------------------------------------------------------
