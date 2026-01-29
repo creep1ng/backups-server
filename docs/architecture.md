@@ -1,89 +1,89 @@
-# Componentes principales
+# Main components
 
-## Servidor
+## Server
 
-Es el dispositivo que contiene los archivos valiosos a respaldar, así como el responsable de ejecutar el servicio de backup. Los diferentes servicios que serán respaldados estarán desplegados mediante contenedores Docker, siempre orquestrados mediante Docker Compose.
+The server is the machine that holds the valuable files to be backed up and runs the backup service. Services to be backed up are deployed as Docker containers and are orchestrated with Docker Compose.
 
-## Datos
+## Data
 
-Son los componentes a respaldar. Al momento de hoy, se considera que un backup completo consta de:
+These are the items to back up. At the time of writing, a complete backup includes:
 
-1. Archivos de docker compose.
-2. Archivos `.env` de cada servicio
-3. Volúmenes Docker.
+1. Docker Compose files.
+2. Each service's `.env` files.
+3. Docker volumes.
 4. Bind mounts.
 
 ## Storage Box
 
-Es el servidor destino que preservará los datos. La idea es emplear una sub-cuenta de la Storage Box dedicada a cada alcance (es decir, una para backups de empresa 1, otra para backups personales, y así). El aplicativo debe recibir a qué sub-cuenta subir cada respaldo.
+The Storage Box is the destination server that preserves backups. The intended model is to use a dedicated sub-account for each scope (for example, one sub-account for company A, another for personal backups, etc.). The application must be told which sub-account to upload each backup to.
 
-Para preservar la integridad se configurarán en todas las sub-accounts borg en modo [append-only](https://docs.hetzner.com/storage/storage-box/access/access-ssh-rsync-borg/#append-only-mode), garantizando así que aún en entornos donde el servidor está comprometido no puedan eliminarse los respaldos.
+To protect integrity, Borg repositories on all sub-accounts should be configured in append-only mode: see Hetzner's docs on [append-only mode](https://docs.hetzner.com/storage/storage-box/access/access-ssh-rsync-borg/#append-only-mode). This reduces the risk of backups being deleted even if the origin server is compromised.
 
-La subida deberá hacerse a través de un protocolo que opere sobre SSH, como SFTP o Rsync. La Storage Box no tiene password configurada, así que la única forma de acceder es a través de llaves SSH.
+Uploads must use an SSH-based transport such as SFTP or rsync over SSH. The Storage Box does not use password authentication, so access is via SSH keys only.
 
-## Aplicativo
+## Application
 
-Es el componente encargado de reconocer los volúmenes, bind mounts, archivos de configuación para subirlos a Storage Box. Gestiona la configuración de la compresión, la subida mediante el protocolo sobre SFTP, parámetros de borg, entre otros.
+This component discovers volumes, bind mounts, and configuration files to upload to the Storage Box. It manages compression settings, the upload protocol (over SSH), Borg parameters, and related behavior.
 
-# Necesidades
+# Requirements
 
-1. El servicio es configurable a través de un archivo, para indicar:
-    1. Algoritmos y niveles de compresión.
-    2. Credenciales de acceso a la Storage Box.
-    3. Servicio de docker, especificando sus datos.
-        1. En caso de que el servicio tenga componentes cuyos datos puedan ser invalidados (por ejemplo, bases de datos que tengan scripts personalizados para backup), debe permitir ejecutar comandos personalizados para cada servicio del archivo Compose, tanto como para la fase de backup como para la fase de restore.
-2. El servicio ofrece una funcionalidad para respaldar de manera incremental los datos especificados en el archivo de configuración, siguiendo los comandos personalizados de respaldo.
-3. El servicio ofrece una funcionalidad para restablecer los datos especificados en el archivo de configuración, siguiendo los comandos personalizados de restore.
-4. El usuario puede lanzar trabajos de respaldo manualmente.
-5. El servicio puede ejecutarse a través de unidad systemd, y ofrece tanto unidad como timer.
-6. El servicio hace logs sobre el status de la carga, informando en caso de error o de trabajo de subida terminado.
-7. El servicio, en caso de ser interrumpido, permite restablecer un trabajo desde el último paso ejecutado.
-8. El servicio, en caso de emplear compresión, permite limitar la cantidad de CPUs empleadas a la hora de realizar la compresión.
+1. The service is configurable via a YAML file and must allow specifying:
+    1. Compression algorithm and level.
+    2. Credentials for the Storage Box.
+    3. Docker service details.
+        1. If a service contains data that requires special handling (for example, databases that need custom backup scripts), the tool must support running custom commands per Docker Compose service for both backup and restore phases.
+2. The service provides incremental backup functionality for the data listed in the configuration file, honoring custom backup commands.
+3. The service provides restore functionality for the configured data, honoring custom restore commands.
+4. Users can launch backup jobs manually.
+5. The service can run under systemd and ships both a service unit and a timer.
+6. The service logs upload status and clearly reports errors or completion of upload jobs.
+7. If interrupted, the service can resume a job from the last completed step.
+8. When compression is enabled, the service can limit the number of CPUs used for compression.
 
-# Alcance y objetivos
+# Scope and goals
 
-El servidor origen ejecuta el servicio de backups y aloja los datos a respaldar; los servicios están desplegados con contenedores Docker orquestados con Docker Compose. [file:1]
+The source server runs the backup service and hosts the data to be protected; services are deployed as Docker containers orchestrated with Docker Compose. [`docs/architecture.md`](docs/architecture.md:45) <!-- link kept for context -->
 
-Un “backup completo” incluye: archivos de Docker Compose, archivos `.env`, volúmenes Docker y bind mounts. [file:1]
+A “complete backup” includes Docker Compose files, `.env` files, Docker volumes, and bind mounts. [`docs/architecture.md`](docs/architecture.md:47)
 
-El destino es una Storage Box accesible por SSH (sin password, usando llaves), y los repositorios Borg se configuran en modo append-only para mitigar borrados incluso si el servidor origen está comprometido. [file:1]
+The destination is a Storage Box accessible over SSH (key-based, no password); Borg repositories should be set to append-only to mitigate deletions even if the origin server is compromised. [`docs/architecture.md`](docs/architecture.md:49)
 
-# Tecnologías
+# Technologies
 
-- Lenguaje: Python 3.x (script/CLI), estilo idiomático y dependencias mínimas (stdlib + parser YAML).
-- Backup incremental/deduplicación/compresión/cifrado: BorgBackup como motor único (no se soporta rsync/sftp). [page:0]
-- Transporte: SSH (el propio Borg opera sobre repositorios remotos vía SSH). [page:0]
-- Orquestación de servicios: Docker Compose (para descubrir volúmenes/binds y para ejecutar hooks pre/post). [file:1]
-- Scheduling: systemd service + systemd timer (unidad y timer provistos por el proyecto). [file:1]
+- Language: Python 3.x (CLI/script), idiomatic style and minimal dependencies (stdlib + YAML parser).
+- Backup engine: BorgBackup for incremental backups, deduplication, compression, and encryption (single engine; rsync/sftp-only modes are out of scope). [`docs/architecture.md`](docs/architecture.md:54)
+- Transport: SSH (Borg operates over SSH for remote repositories). [`docs/architecture.md`](docs/architecture.md:55)
+- Service orchestration: Docker Compose (used to discover volumes/binds and to run pre/post hooks). [`docs/architecture.md`](docs/architecture.md:56)
+- Scheduling: systemd service + systemd timer (units provided by the project). [`docs/architecture.md`](docs/architecture.md:57)
 
-# Componentes y responsabilidades
+# Components and responsibilities
 
 - CLI (Python):
-    - `validate`: valida sintaxis/semántica del YAML y termina en early return si hay errores.
-    - `backup`: ejecuta respaldo incremental por servicio, respetando hooks y estado.
-    - `restore`: restaura desde un snapshot remoto.
-    - `list-remote`: lista snapshots remotos del repo (y puede agrupar/filtrar).
-- Descubrimiento de datos:
-    - Parseo del `compose_file` para encontrar bind mounts y/o rutas relevantes; además incluye `.env` y archivos compose como parte del backup. [file:1]
-- Hooks por servicio:
-    - Permite comandos personalizados para backup y restore (p.ej. dumps de DB antes de respaldar, y restore después). [file:1]
+    - `validate`: validates YAML syntax/semantics and returns early on errors.
+    - `backup`: performs an incremental backup per service, respecting hooks and state.
+    - `restore`: restores from a remote snapshot.
+    - `list-remote`: lists remote repository snapshots (supports grouping/filtering).
+- Data discovery:
+    - Parse the `compose_file` to find bind mounts and other relevant paths; also include `.env` and compose files as part of the backup. [`docs/architecture.md`](docs/architecture.md:67)
+- Service hooks:
+    - Support custom commands for backup and restore (for example, database dumps before backup and restore commands afterwards). [`docs/architecture.md`](docs/architecture.md:69)
 
-# Decisiones clave (on-the-fly y naming)
+# Key decisions (on-the-fly and naming)
 
-El backup **no** genera un archivo `.tar` intermedio: se invoca `borg create ... [PATH...]`, y Borg recorre los paths y crea el archive directamente (con compresión/deduplicación), evitando el riesgo de out-of-space por artefactos temporales grandes. [page:0]
+Backups do NOT create an intermediate `.tar` file. Instead, `borg create ... [PATH...]` is invoked and Borg reads paths directly to build the archive (with compression/deduplication). This avoids running out of disk space due to large temporary artifacts. [`docs/architecture.md`](docs/architecture.md:73)
 
-Para datos que se generan por comando (p.ej. dumps), el diseño usa `--content-from-command` o entrada por `stdin` (path `-`) para que el contenido se “streamée” al archive sin persistirlo completo en disco. [page:0]
+For data generated by commands (for example, dumps), the design uses `--content-from-command` or stdin (`-`) so content can be streamed into the archive without being fully written to disk. [`docs/architecture.md`](docs/architecture.md:75)
 
-El nombre del snapshot sigue un formato estable para soportar filtros: `"{service}-{now:%Y-%m-%dT%H:%M:%S}"`, aprovechando placeholders soportados por Borg. [page:0]
+Snapshot names follow a stable format to support filtering: `"{service}-{now:%Y-%m-%dT%H:%M:%S}"`, leveraging placeholders supported by Borg. [`docs/architecture.md`](docs/architecture.md:77)
 
-# Patrones y convenciones
+# Patterns and conventions
 
-- Early return: si el YAML no parsea o no valida, la ejecución aborta antes de tocar datos.
+- Early return: if YAML fails to parse or validate, execution aborts before touching data.
 - SSH:
-    - Uso de llave privada con permisos restrictivos.
-    - Invocaciones con `subprocess.run([...], shell=False)` para reducir riesgo de inyección.
-- Append-only remoto (Borg): defensa ante borrados maliciosos desde origen. [file:1]
-- Reintentos:
-    - Reintento con backoff solo para operaciones de red/IO (por ejemplo `borg create`, `borg list`), con límites conservadores.
-- Reanudación:
-    - Estado local mínimo por servicio (último paso completado) para reiniciar tras interrupciones. [file:1]
+    - Use a private key with restrictive permissions.
+    - Invoke external commands with `subprocess.run([...], shell=False)` to reduce injection risks.
+- Remote append-only (Borg): a defensive measure against malicious deletions from the origin. [`docs/architecture.md`](docs/architecture.md:85)
+- Retries:
+    - Retry with backoff only for network/IO operations (for example `borg create`, `borg list`) with conservative limits.
+- Resumption:
+    - Maintain minimal local state per service (last completed step) to restart after interruptions. [`docs/architecture.md`](docs/architecture.md:89)

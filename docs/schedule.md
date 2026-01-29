@@ -1,38 +1,38 @@
-> Asumo iteración semanal con entregables pequeños y testeables.
+> Assume a weekly iteration cadence with small, testable deliverables.
 
-## Fase 0 — Preparación (0.5–1 día)
+## Phase 0 — Preparation (0.5–1 day)
 
-- Definir repositorio, packaging mínimo (script ejecutable + requirements).
-- Acordar convención de naming de snapshots (por servicio) usando placeholders o timestamp fijo. [page:0]
+- Define the repository and minimal packaging (executable script + requirements).
+- Agree on snapshot naming conventions (per-service) using placeholders or a fixed timestamp. [`docs/schedule.md`](docs/schedule.md:6)
 
-## Fase 1 — Config + CLI base (1–2 días)
+## Phase 1 — Config + base CLI (1–2 days)
 
-- Implementar `validate` con parseo YAML y validación estricta (early return).
-- Implementar CLI con `backup`, `restore` (stub), `list-remote` (stub).
-- Tests manuales: YAML inválido, campos faltantes, paths inexistentes.
+- Implement `validate` with YAML parsing and strict validation (early return).
+- Implement the CLI with `backup`, `restore` (stub), and `list-remote` (stub).
+- Manual tests: invalid YAML, missing fields, nonexistent paths.
 
-## Fase 2 — Backup funcional (2–4 días)
+## Phase 2 — Functional backup (2–4 days)
 
-- Implementar descubrimiento mínimo de rutas (compose + env + extra_paths).
-- Implementar hooks `backup_commands.pre/post`. [file:1]
-- Implementar `borg create` para snapshots incrementales sin tar intermedio. [page:0]
-- Guardar `last_success_archive` en estado local.
+- Implement minimal path discovery (compose + env + extra_paths).
+- Implement `backup_commands.pre/post` hooks. [`docs/schedule.md`](docs/schedule.md:17)
+- Implement `borg create` for incremental snapshots without an intermediate tar file. [`docs/schedule.md`](docs/schedule.md:18)
+- Persist `last_success_archive` in local state.
 
-## Fase 3 — Listado remoto (1–2 días)
+## Phase 3 — Remote listing (1–2 days)
 
-- Implementar `list-remote` usando `borg list --json` o `-format`. [page:1]
-- Implementar filtros `-service` y agrupación `-group-by hostname` usando el metadato `hostname`. [page:1]
-- Ajustar salida para ser “script-friendly” (una línea por snapshot o JSON).
+- Implement `list-remote` using `borg list --json` or `--format`. [`docs/schedule.md`](docs/schedule.md:23)
+- Implement `--service` filters and grouping `--group-by hostname` using the `hostname` metadata. [`docs/schedule.md`](docs/schedule.md:24)
+- Adjust output to be script-friendly (one line per snapshot or JSON).
 
-## Fase 4 — Restore usable (2–4 días)
+## Phase 4 — Usable restore (2–4 days)
 
-- Implementar `borg extract` (restore a staging dir).
-- Implementar hooks `restore_commands.pre/post`. [file:1]
-- Añadir opción `-latest` (usa estado local y/o `borg list` para resolver snapshot).
+- Implement `borg extract` (restore to a staging directory).
+- Implement `restore_commands.pre/post` hooks. [`docs/schedule.md`](docs/schedule.md:30)
+- Add a `--latest` option (use local state and/or `borg list` to resolve the snapshot).
 
-## Fase 5 — Robustez y hardening (2–3 días)
+## Phase 5 — Robustness and hardening (2–3 days)
 
-- Señales SIGINT/SIGTERM: guardar `last_step` y salir con códigos adecuados.
-- Reintentos con backoff para operaciones Borg/SSH.
-- Validaciones de permisos (ssh key, rutas sensibles).
-- Entrega de unit/timer systemd y documentación de despliegue. [file:1]
+- Handle SIGINT/SIGTERM: save `last_step` and exit with appropriate exit codes.
+- Retries with backoff for Borg/SSH operations.
+- Permission validations (SSH key, sensitive paths).
+- Deliver systemd unit/timer and deployment documentation. [`docs/schedule.md`](docs/schedule.md:38)
