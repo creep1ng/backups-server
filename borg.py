@@ -51,11 +51,20 @@ def build_borg_create_command(
     cmd: List[str] = ["borg", "create"]
 
     # Compression
-    compression_map = {"zstd": "zstd", "none": "none"}
+    compression_map = {"zstd": "zstd", "none": "none", "auto": "auto"}
     comp = config.get("compression")
     if comp:
-        comp_val = compression_map.get(comp, comp)
-        cmd += ["--compression", comp_val]
+        if isinstance(comp, dict):
+            algorithm = comp.get("algorithm")
+            level = comp.get("level")
+            if algorithm:
+                comp_val = compression_map.get(algorithm, algorithm)
+                if level is not None and comp_val not in {"none", "auto"}:
+                    comp_val = f"{comp_val},{level}"
+                cmd += ["--compression", comp_val]
+        else:
+            comp_val = compression_map.get(comp, comp)
+            cmd += ["--compression", comp_val]
 
     # Extra borg args
     extra_args = borg_cfg.get("extra_args") or []
@@ -101,8 +110,26 @@ def run_borg_create(
     template = borg_cfg.get("archive_name_template", "{service}-{timestamp}")
 
     # Timestamp in UTC: YYYY-MM-DDTHH:MM:SS
-    timestamp = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
-    archive_name = template.format(service=service_name, timestamp=timestamp)
+    now = datetime.datetime.utcnow()
+    timestamp = now.strftime("%Y-%m-%dT%H:%M:%S")
+    logger.debug(
+        "Formatting archive name with template=%r service=%r timestamp=%r now=%r",
+        template,
+        service_name,
+        timestamp,
+        now,
+    )
+    try:
+        archive_name = template.format(
+            service=service_name, timestamp=timestamp, now=now
+        )
+    except KeyError as exc:
+        logger.exception(
+            "Archive name template has missing key: %s (template=%r)",
+            exc,
+            template,
+        )
+        raise
 
     try:
         cmd = build_borg_create_command(config, service_name, paths, archive_name)
