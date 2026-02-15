@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Command-line entrypoint for the backups tool (Phase 0 + Phase 1).
+Command-line entrypoint for the backups tool (Phase 0 + Phase 1 + Phase 3).
 
 Implements basic CLI commands as stubs and performs configuration
 validation using the config loader.
@@ -14,8 +14,14 @@ from pathlib import Path
 from typing import Optional
 
 import backup_flow
+from borg import run_borg_list_archives
 from config_loader import load_config
 from errors import ConfigError
+from remote_listing import (
+    process_remote_archives,
+    render_json,
+    render_tsv,
+)
 
 
 def _exit_with_config_error(exc: ConfigError) -> None:
@@ -49,11 +55,24 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--latest", action="store_true", help="Restore from latest snapshot"
     )
 
-    list_p = subparsers.add_parser("list-remote", help="List remote snapshots (stub)")
-    list_p.add_argument("--service", help="Filter by service name")
-    list_p.add_argument("--format", choices=("text", "json"), default="text")
+    list_p = subparsers.add_parser("list-remote", help="List remote archives")
     list_p.add_argument(
-        "--group-by", choices=("service", "hostname"), default="service"
+        "--service",
+        action="append",
+        dest="services",
+        default=[],
+        help="Filter by service name (can be specified multiple times)",
+    )
+    list_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Output as JSON instead of TSV",
+    )
+    list_p.add_argument(
+        "--group-by",
+        choices=("service", "hostname"),
+        default="service",
+        help="Group archives by specified key (default: service)",
     )
 
     # Normalize argv list
@@ -163,6 +182,38 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 1
 
         print("Backup completed")
+        return 0
+
+    if args.command == "list-remote":
+        # Get service filter (convert to list if specified)
+        services = args.services if args.services else None
+
+        # Call borg list to get raw archives
+        success, raw_archives, error = run_borg_list_archives(config, services)
+
+        if not success:
+            print(f"Failed to list archives: {error}", file=sys.stderr)
+            return 1
+
+        if raw_archives is None:
+            print("No archives found", file=sys.stderr)
+            return 1
+
+        # Process the raw archives into normalized records
+        processed = process_remote_archives(
+            raw_archives=raw_archives,
+            config=config,
+            services=services,
+            group_by=args.group_by,
+        )
+
+        # Render output
+        if args.json:
+            output = render_json(processed, args.group_by, services)
+        else:
+            output = render_tsv(processed)
+
+        print(output)
         return 0
 
 

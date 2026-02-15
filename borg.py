@@ -1,18 +1,20 @@
 """Borg operations module.
 
 Provides helpers to build and run borg create commands for incremental
-snapshots without intermediate tar files.
+snapshots without intermediate tar files, and to list archives from
+remote repositories.
 """
 
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import os
 import shlex
 import subprocess
 import time
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from config_loader import get_borg_passphrase
 from errors import ConfigValidationError
@@ -68,6 +70,244 @@ def _run_process_streaming_output(
     return rc, "\n".join(output_tail)
 
 
+def build_repo_url(config: dict) -> str:
+    """Build the Borg repository URL from config.
+
+    Args:
+        config: Configuration dictionary containing storage_box settings.
+
+    Returns:
+        The SSH repository URL (e.g., ssh://user@host:port/path).
+
+    Raises:
+        KeyError: If required storage_box configuration is missing.
+    """
+    storage = config.get("storage_box", {})
+    user = storage.get("user")
+    host = storage.get("host")
+    port = storage.get("port")
+    repo_path = storage.get("repo_path")
+
+    if not all([user, host, port, repo_path]):
+        logger.error(
+            "Missing storage_box configuration (user, host, port, repo_path required)"
+        )
+        raise KeyError("Incomplete storage_box configuration for borg repository URL")
+
+    # Borg's ssh URL forms are sensitive:
+    # - Absolute repo path:   ssh://user@host:port/absolute/path
+    # - Relative-to-home:     ssh://user@host:port/./relative/path
+    #
+    # Our config uses `storage_box.repo_path`. If it starts with '/', treat it
+    # as an absolute remote path. Otherwise, treat it as relative to the
+    # remote user's home and normalize to '/./...'.
+    repo_path_str = str(repo_path)
+    if repo_path_str.startswith("/"):
+        # Avoid accidental double-slashes like '...:23//home/backup'.
+        return f"ssh://{user}@{host}:{port}{repo_path_str}"
+    else:
+        rel = repo_path_str.lstrip("./")
+        return f"ssh://{user}@{host}:{port}/./{rel}"
+
+
+def build_borg_environment(config: dict) -> dict:
+    """Build the environment variables needed for Borg operations.
+
+    This sets up BORG_RSH (SSH with configured key), BORG_PASSPHRASE,
+    and non-interactive safeguards.
+
+    Args:
+        config: Configuration dictionary.
+
+    Returns:
+        Environment dict suitable for subprocess execution.
+
+    Raises:
+        ConfigValidationError: If required config is missing.
+    """
+    storage = config.get("storage_box", {})
+    ssh_key = storage.get("ssh_key_path")
+    host = storage.get("host")
+    port = storage.get("port")
+    user = storage.get("user")
+
+    if not ssh_key:
+        logger.error("ssh_key_path is not configured in storage_box")
+        raise ConfigValidationError("ssh_key_path is not configured in storage_box")
+
+    # Build BORG_RSH.
+    #
+    # Important: ensure ssh is non-interactive. If ssh needs to prompt (unknown
+    # host key, encrypted key passphrase, etc.), it may block waiting for input
+    # and the prompt may not be visible depending on how output is captured.
+    borg_rsh_parts = [
+        "ssh",
+        "-i",
+        ssh_key,
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=20",
+        "-o",
+        "ServerAliveInterval=30",
+        "-o",
+        "ServerAliveCountMax=3",
+    ]
+    if port:
+        borg_rsh_parts += ["-p", str(port)]
+
+    borg_rsh = " ".join(shlex.quote(p) for p in borg_rsh_parts)
+
+    env = os.environ.copy()
+    env["BORG_RSH"] = borg_rsh
+
+    # --- NON-INTERACTIVE SAFEGUARDS ---
+    # Borg can prompt interactively in several scenarios:
+    # 1) Repo "relocated" from a different URL (e.g., path changed)
+    # 2) Unknown host key (should be handled by SSH StrictHostKeyChecking)
+    # 3) Repository integrity issues
+    # Force non-interactive (fail instead of prompt) for unattended operation.
+    env["BORG_RELOCATED_REPO_ACCESS_IS_OK"] = "yes"
+    env["BORG_HOST_KEY_IS_OK"] = "yes"
+
+    try:
+        passphrase = get_borg_passphrase(config)
+    except ConfigValidationError as exc:
+        logger.error("Failed to retrieve borg passphrase: %s", exc)
+        raise
+    env["BORG_PASSPHRASE"] = passphrase
+
+    return env
+
+
+def _run_borg_command(
+    cmd: List[str],
+    env: dict,
+    description: str = "borg",
+) -> Tuple[int, str, str]:
+    """Run a borg command and return results.
+
+    Args:
+        cmd: Command arguments list.
+        env: Environment variables dict.
+        description: Description for logging (e.g., 'borg create', 'borg list').
+
+    Returns:
+        Tuple of (return_code, stdout, stderr).
+    """
+    logger.info("Executing %s: %s", description, " ".join(shlex.quote(p) for p in cmd))
+
+    try:
+        result = subprocess.run(
+            cmd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=300,  # 5 minute timeout for list operations
+        )
+        return result.returncode, result.stdout, result.stderr
+    except subprocess.TimeoutExpired:
+        logger.error("%s timed out after 300 seconds", description)
+        return -1, "", "Command timed out"
+    except FileNotFoundError:
+        logger.exception("borg executable not found in PATH")
+        return -1, "", "borg executable not found in PATH"
+    except Exception:
+        logger.exception("Unexpected error while running %s", description)
+        return -1, "", "Unexpected error"
+
+
+def run_borg_list_archives(
+    config: dict,
+    service_filter: Optional[List[str]] = None,
+) -> Tuple[bool, Optional[List[Dict[str, Any]]], Optional[str]]:
+    """List archives from the remote Borg repository.
+
+    This function attempts to use JSON output first, then falls back to
+    deterministic TSV format parsing if JSON is not supported.
+
+    Args:
+        config: Configuration dictionary.
+        service_filter: Optional list of service names to filter archives.
+
+    Returns:
+        Tuple of (success, archives_list, error_message).
+        archives_list is a list of dicts with archive metadata.
+    """
+    repo_url = build_repo_url(config)
+    env = build_borg_environment(config)
+
+    # First try JSON output (preferred)
+    cmd_json = ["borg", "list", "--json", repo_url]
+    rc, stdout, stderr = _run_borg_command(cmd_json, env, "borg list --json")
+
+    if rc == 0 and stdout:
+        try:
+            data = json.loads(stdout)
+            if isinstance(data, dict) and "archives" in data:
+                logger.debug("Successfully retrieved archives via JSON")
+                return True, data.get("archives", []), None
+        except json.JSONDecodeError as exc:
+            logger.warning("Failed to parse JSON output: %s", exc)
+
+    # JSON failed or not supported, fall back to TSV format
+    logger.debug("JSON output not available, falling back to TSV format")
+
+    # Use deterministic format: archive name, timestamp, hostname
+    # Format: name\thostname\ttime
+    tsv_cmd = [
+        "borg",
+        "list",
+        "--format",
+        "{name}\t{hostname}\t{time}\n",
+        repo_url,
+    ]
+    rc, stdout, stderr = _run_borg_command(tsv_cmd, env, "borg list --format")
+
+    if rc != 0:
+        error_msg = stderr.strip() or f"borg list failed with code {rc}"
+        logger.error("borg list failed: %s", error_msg)
+        return False, None, error_msg
+
+    # Parse TSV output
+    archives = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 3:
+            archives.append(
+                {
+                    "name": parts[0],
+                    "hostname": parts[1],
+                    "time": parts[2],
+                }
+            )
+        elif len(parts) == 2:
+            # Fallback if hostname missing
+            archives.append(
+                {
+                    "name": parts[0],
+                    "hostname": "",
+                    "time": parts[1],
+                }
+            )
+        elif len(parts) == 1:
+            archives.append(
+                {
+                    "name": parts[0],
+                    "hostname": "",
+                    "time": "",
+                }
+            )
+
+    logger.debug("Retrieved %d archives via TSV fallback", len(archives))
+    return True, archives, None
+
+
 def build_borg_create_command(
     config: dict, service_name: str, paths: List[str], archive_name: str
 ) -> List[str]:
@@ -84,35 +324,8 @@ def build_borg_create_command(
     """
     borg_cfg = config.get("borg", {})
 
-    # Repository pieces
-    storage = config.get("storage_box", {})
-    user = storage.get("user")
-    host = storage.get("host")
-    port = storage.get("port")
-    repo_path = storage.get("repo_path")
-
-    if not all([user, host, port, repo_path]):
-        logger.error(
-            "Missing storage_box configuration (user, host, port, repo_path required)"
-        )
-        raise KeyError("Incomplete storage_box configuration for borg repository URL")
-
-    # Construct repository URL.
-    #
-    # Borg's ssh URL forms are sensitive:
-    # - Absolute repo path:   ssh://user@host:port/absolute/path
-    # - Relative-to-home:     ssh://user@host:port/./relative/path
-    #
-    # Our config uses `storage_box.repo_path`. If it starts with '/', treat it
-    # as an absolute remote path. Otherwise, treat it as relative to the
-    # remote user's home and normalize to '/./...'.
-    repo_path_str = str(repo_path)
-    if repo_path_str.startswith("/"):
-        # Avoid accidental double-slashes like '...:23//home/backup'.
-        repo_url = f"ssh://{user}@{host}:{port}{repo_path_str}"
-    else:
-        rel = repo_path_str.lstrip("./")
-        repo_url = f"ssh://{user}@{host}:{port}/./{rel}"
+    # Use shared helper to build repo URL
+    repo_url = build_repo_url(config)
 
     cmd: List[str] = ["borg", "create"]
 
@@ -203,60 +416,12 @@ def run_borg_create(
         logger.exception("Failed to build borg create command")
         return False, None
 
-    # Prepare environment with BORG_RSH to use the specified ssh key
-    storage = config.get("storage_box", {})
-    ssh_key = storage.get("ssh_key_path")
-    host = storage.get("host")
-    port = storage.get("port")
-    user = storage.get("user")
-
-    if not ssh_key:
-        logger.error("ssh_key_path is not configured in storage_box")
-        return False, None
-
-    # Build BORG_RSH.
-    #
-    # Important: ensure ssh is non-interactive. If ssh needs to prompt (unknown
-    # host key, encrypted key passphrase, etc.), it may block waiting for input
-    # and the prompt may not be visible depending on how output is captured.
-    borg_rsh_parts = [
-        "ssh",
-        "-i",
-        ssh_key,
-        "-o",
-        "StrictHostKeyChecking=accept-new",
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "ConnectTimeout=20",
-        "-o",
-        "ServerAliveInterval=30",
-        "-o",
-        "ServerAliveCountMax=3",
-    ]
-    if port:
-        borg_rsh_parts += ["-p", str(port)]
-
-    borg_rsh = " ".join(shlex.quote(p) for p in borg_rsh_parts)
-
-    env = os.environ.copy()
-    env["BORG_RSH"] = borg_rsh
-
-    # --- NON-INTERACTIVE SAFEGUARDS ---
-    # Borg can prompt interactively in several scenarios:
-    # 1) Repo "relocated" from a different URL (e.g., path changed)
-    # 2) Unknown host key (should be handled by SSH StrictHostKeyChecking)
-    # 3) Repository integrity issues
-    # Force non-interactive (fail instead of prompt) for unattended operation.
-    env["BORG_RELOCATED_REPO_ACCESS_IS_OK"] = "yes"
-    env["BORG_HOST_KEY_IS_OK"] = "yes"
-
+    # Use shared helper to build environment
     try:
-        passphrase = get_borg_passphrase(config)
+        env = build_borg_environment(config)
     except ConfigValidationError as exc:
-        logger.error("Failed to retrieve borg passphrase: %s", exc)
+        logger.error("Failed to build borg environment: %s", exc)
         return False, None
-    env["BORG_PASSPHRASE"] = passphrase
 
     logger.info("Executing borg create: %s", " ".join(shlex.quote(p) for p in cmd))
 
