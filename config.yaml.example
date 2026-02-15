@@ -35,6 +35,12 @@ borg:
   # Placeholders supported by Borg can be used (for example {now:%Y-%m-%dT%H:%M:%S}).
   archive_name_template: "{service}-{now:%Y-%m-%dT%H:%M:%S}"
 
+  # Passphrase for the Borg repository encryption.
+  # This value is required and must match the passphrase used when initializing
+  # the Borg repository (e.g., via `borg init --encryption=repokey`).
+  # WARNING: Keep this file readable only by the backup user (chmod 600).
+  passphrase: "your-secure-passphrase-here"
+
   # Optional list of extra arguments passed to borg create (example: --stats)
   extra_args:
     - "--stats"
