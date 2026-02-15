@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 import backup_flow
+import restore_flow
 from borg import run_borg_list_archives
 from config_loader import load_config
 from errors import ConfigError
@@ -49,10 +50,22 @@ def main(argv: Optional[list[str]] = None) -> int:
         "restore", help="Restore a service from a snapshot (stub)"
     )
     restore_p.add_argument("--service", required=True, help="Service name to restore")
+    restore_p.add_argument(
+        "--staging-dir",
+        required=True,
+        help="Directory where the archive will be extracted",
+    )
+    restore_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Allow restoring into a non-empty staging directory",
+    )
     snapshot_group = restore_p.add_mutually_exclusive_group(required=True)
     snapshot_group.add_argument("--snapshot", help="Snapshot/archive name to restore")
     snapshot_group.add_argument(
-        "--latest", action="store_true", help="Restore from latest snapshot"
+        "--latest",
+        action="store_true",
+        help="Restore from latest snapshot",
     )
 
     list_p = subparsers.add_parser("list-remote", help="List remote archives")
@@ -125,6 +138,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     if args.command == "backup":
+        results: object
         try:
             results = backup_flow.backup_all_services(config)
         except Exception as e:  # pragma: no cover - unexpected runtime error
@@ -184,6 +198,40 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("Backup completed")
         return 0
 
+    if args.command == "restore":
+        if args.snapshot:
+            archive_name = args.snapshot
+        else:
+            try:
+                archive_name = restore_flow.resolve_latest_archive_name(
+                    config, args.service
+                )
+            except restore_flow.RestoreError as exc:
+                print(f"Failed to resolve latest archive: {exc}", file=sys.stderr)
+                return 1
+
+        try:
+            ok = restore_flow.restore_service(
+                config,
+                args.service,
+                archive_name,
+                args.staging_dir,
+                force=args.force,
+            )
+        except restore_flow.RestoreError as exc:
+            print(f"Restore failed: {exc}", file=sys.stderr)
+            return 1
+        except Exception as exc:  # pragma: no cover - unexpected runtime error
+            print(f"Unexpected error during restore: {exc}", file=sys.stderr)
+            return 2
+
+        if not ok:
+            print("Restore completed with failures", file=sys.stderr)
+            return 1
+
+        print("Restore completed")
+        return 0
+
     if args.command == "list-remote":
         # Get service filter (convert to list if specified)
         services = args.services if args.services else None
@@ -215,6 +263,8 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         print(output)
         return 0
+
+    return 0
 
 
 if __name__ == "__main__":

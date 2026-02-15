@@ -368,6 +368,51 @@ def build_borg_create_command(
     return cmd
 
 
+def build_borg_extract_command(
+    config: dict, archive_name: str, target_dir: str
+) -> List[str]:
+    """Build the borg extract command for the requested archive."""
+
+    repo_url = build_repo_url(config)
+    repo_and_archive = f"{repo_url}::{archive_name}"
+
+    cmd: List[str] = [
+        "borg",
+        "extract",
+        "--target",
+        target_dir,
+        repo_and_archive,
+    ]
+    logger.debug("Built borg extract command: %s", cmd)
+    return cmd
+
+
+def run_borg_extract(config: dict, archive_name: str, target_dir: str) -> bool:
+    """Execute borg extract for archive -> target_dir."""
+
+    try:
+        env = build_borg_environment(config)
+    except ConfigValidationError:
+        return False
+
+    cmd = build_borg_extract_command(config, archive_name, target_dir)
+    logger.info("Executing borg extract: %s", " ".join(shlex.quote(p) for p in cmd))
+
+    try:
+        rc, tail = _run_process_streaming_output(cmd, env)
+        if rc == 0:
+            logger.info("borg extract succeeded: %s", archive_name)
+            return True
+        logger.error("borg extract failed (code %s). Tail output:\n%s", rc, tail)
+        return False
+    except FileNotFoundError:
+        logger.exception("borg executable not found in PATH")
+        return False
+    except Exception:
+        logger.exception("Unexpected error while running borg extract")
+        return False
+
+
 def run_borg_create(
     config: dict, service_name: str, paths: List[str]
 ) -> Tuple[bool, Optional[str]]:

@@ -93,6 +93,40 @@ python backup_tool.py --config ./config.yaml.example list-remote --json
 
 **Grouping (`--group-by`):** Supports `service` (default) or `hostname`. When set to `hostname` with `--json`, archives are additionally organized into a `groups` object keyed by hostname. Archives are always sorted deterministically: service → hostname → time_utc → archive name.
 
+### Restoring a service
+
+The `restore` command extracts a snapshot from the remote Borg repository into a local staging directory:
+
+```bash
+# Restore a specific snapshot by name
+python backup_tool.py --config ./config.yaml.example restore --service nextcloud --snapshot nextcloud-2024-01-15T10:30:00 --staging-dir /tmp/restore
+
+# Restore the latest known snapshot for a service
+python backup_tool.py --config ./config.yaml.example restore --service nextcloud --latest --staging-dir /tmp/restore
+
+# Force restore into a non-empty staging directory
+python backup_tool.py --config ./config.yaml.example restore --service nextcloud --latest --staging-dir /tmp/restore --force
+```
+
+**Required arguments:**
+- `--service`: Name of the service to restore (must exist in configuration).
+- `--staging-dir`: Local directory where the archive contents will be extracted.
+- `--snapshot` OR `--latest`: Mutually exclusive. Specify either an exact archive name or request the latest available snapshot.
+
+**Staging directory semantics:**
+- The staging directory is auto-created if it does not exist (including parent directories).
+- If the directory exists and is not empty, the restore fails unless `--force` is specified.
+- If the path exists but is not a directory, the restore fails regardless of `--force`.
+
+**`--latest` resolution logic:**
+1. Prefer local state: if a `last_success_archive` is recorded for the service, use it (after validating it exists in the repository).
+2. Fall back to remote listing: query `borg list` and select the newest archive by timestamp.
+3. Deterministic tie-breaking: when multiple archives share the same timestamp, the lexicographically smaller archive name is selected.
+
+**Restore hooks:**
+- `restore_commands.pre`: Executed before `borg extract`. If any pre-hook fails, the restore aborts immediately.
+- `restore_commands.post`: Executed after `borg extract`. Post-hooks run even if the extraction failed; failures are logged but do not affect the overall restore status.
+
 Hooks and state
 - Pre-hooks are executed before the snapshot (fail-fast). Provide `backup_commands.pre` as a list of shell commands in the service config.
 - Post-hooks are executed after the snapshot; they are attempted even if the borg snapshot failed. Provide `backup_commands.post` as a list of shell commands.

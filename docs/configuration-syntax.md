@@ -107,6 +107,8 @@ Validations:
 - `extra_paths` (list[str]) optional.
 - `backup_commands` / `restore_commands` optional:
     - `pre` and `post` are list[str], executed with subprocess (no shell).
+    - **Backup hooks**: `pre` runs before the snapshot; failure aborts the backup. `post` runs after the snapshot (even if borg failed); failure is logged but does not flip success.
+    - **Restore hooks**: `pre` runs before `borg extract`; failure aborts the restore. `post` runs after extraction (even if extract failed); failure is logged but does not flip success.
 - `streams` optional:
     - Each stream defines `name` (str) and `command` (list[str]).
     - The implementation should map each stream to `borg create --content-from-command` to avoid truncated dumps and to prevent out-of-space from temporary files. [`docs/configuration-syntax.md`](docs/configuration-syntax.md:112)
