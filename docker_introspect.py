@@ -9,7 +9,6 @@ The main entrypoint is :func:`discover_paths`.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import subprocess
@@ -85,7 +84,7 @@ def _resolve_named_volume(volume_name: str, compose_project: str = "") -> Option
                     _named_volume_cache[n] = mountpoint
                 logger.debug("Resolved named volume %s to %s", name, mountpoint)
                 return mountpoint
-        except subprocess.CalledProcessError as e:
+        except subprocess.CalledProcessError:
             logger.debug("Volume %s not found, trying next", name)
         except FileNotFoundError:
             logger.warning("Docker CLI not found - cannot resolve named volumes")
