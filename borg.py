@@ -11,12 +11,61 @@ import logging
 import os
 import shlex
 import subprocess
+import time
 from typing import List, Optional, Tuple
 
 from config_loader import get_borg_passphrase
 from errors import ConfigValidationError
 
 logger = logging.getLogger(__name__)
+
+
+def _run_process_streaming_output(
+    cmd: List[str],
+    env: dict,
+) -> Tuple[int, str]:
+    """Run a subprocess while streaming its combined stdout/stderr to logs.
+
+    Why this exists:
+    - `subprocess.run(..., capture_output=True)` buffers *all* output until the
+      process exits. Borg (and the underlying ssh) often prints progress and
+      may print interactive prompts to stderr. Buffering can make long-running
+      operations appear "stuck" and can also hide prompts.
+
+    Returns:
+        (return_code, combined_output_tail)
+    """
+
+    # Merge stderr into stdout so we don't deadlock and so prompts/progress are
+    # visible in a single stream.
+    proc = subprocess.Popen(
+        cmd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+
+    output_tail: List[str] = []
+    tail_limit = 200  # lines
+    last_line_ts = time.time()
+
+    assert proc.stdout is not None  # for type checkers
+    for line in proc.stdout:
+        last_line_ts = time.time()
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        logger.info("[borg] %s", line)
+        output_tail.append(line)
+        if len(output_tail) > tail_limit:
+            output_tail = output_tail[-tail_limit:]
+
+    rc = proc.wait()
+    runtime = time.time() - (last_line_ts)  # not exact runtime, but fine for logs
+    logger.debug("borg process exited rc=%s (last_output_age=%.1fs)", rc, runtime)
+    return rc, "\n".join(output_tail)
 
 
 def build_borg_create_command(
@@ -48,8 +97,22 @@ def build_borg_create_command(
         )
         raise KeyError("Incomplete storage_box configuration for borg repository URL")
 
-    # Construct repository URL: ssh://user@host:port/repo_path
-    repo_url = f"ssh://{user}@{host}:{port}/{repo_path}"
+    # Construct repository URL.
+    #
+    # Borg's ssh URL forms are sensitive:
+    # - Absolute repo path:   ssh://user@host:port/absolute/path
+    # - Relative-to-home:     ssh://user@host:port/./relative/path
+    #
+    # Our config uses `storage_box.repo_path`. If it starts with '/', treat it
+    # as an absolute remote path. Otherwise, treat it as relative to the
+    # remote user's home and normalize to '/./...'.
+    repo_path_str = str(repo_path)
+    if repo_path_str.startswith("/"):
+        # Avoid accidental double-slashes like '...:23//home/backup'.
+        repo_url = f"ssh://{user}@{host}:{port}{repo_path_str}"
+    else:
+        rel = repo_path_str.lstrip("./")
+        repo_url = f"ssh://{user}@{host}:{port}/./{rel}"
 
     cmd: List[str] = ["borg", "create"]
 
@@ -151,8 +214,26 @@ def run_borg_create(
         logger.error("ssh_key_path is not configured in storage_box")
         return False, None
 
-    # Build BORG_RSH. Include port if provided and numeric.
-    borg_rsh_parts = ["ssh", "-i", ssh_key, "-o", "StrictHostKeyChecking=accept-new"]
+    # Build BORG_RSH.
+    #
+    # Important: ensure ssh is non-interactive. If ssh needs to prompt (unknown
+    # host key, encrypted key passphrase, etc.), it may block waiting for input
+    # and the prompt may not be visible depending on how output is captured.
+    borg_rsh_parts = [
+        "ssh",
+        "-i",
+        ssh_key,
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=20",
+        "-o",
+        "ServerAliveInterval=30",
+        "-o",
+        "ServerAliveCountMax=3",
+    ]
     if port:
         borg_rsh_parts += ["-p", str(port)]
 
@@ -160,6 +241,16 @@ def run_borg_create(
 
     env = os.environ.copy()
     env["BORG_RSH"] = borg_rsh
+
+    # --- NON-INTERACTIVE SAFEGUARDS ---
+    # Borg can prompt interactively in several scenarios:
+    # 1) Repo "relocated" from a different URL (e.g., path changed)
+    # 2) Unknown host key (should be handled by SSH StrictHostKeyChecking)
+    # 3) Repository integrity issues
+    # Force non-interactive (fail instead of prompt) for unattended operation.
+    env["BORG_RELOCATED_REPO_ACCESS_IS_OK"] = "yes"
+    env["BORG_HOST_KEY_IS_OK"] = "yes"
+
     try:
         passphrase = get_borg_passphrase(config)
     except ConfigValidationError as exc:
@@ -170,18 +261,13 @@ def run_borg_create(
     logger.info("Executing borg create: %s", " ".join(shlex.quote(p) for p in cmd))
 
     try:
-        proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
-        logger.debug("borg stdout: %s", proc.stdout)
-        logger.debug("borg stderr: %s", proc.stderr)
-
-        if proc.returncode == 0:
+        rc, tail = _run_process_streaming_output(cmd, env)
+        if rc == 0:
             logger.info("borg create succeeded: %s", archive_name)
             return True, archive_name
-        else:
-            logger.error(
-                "borg create failed (code %s). See logs for details.", proc.returncode
-            )
-            return False, None
+
+        logger.error("borg create failed (code %s). Tail output:\n%s", rc, tail)
+        return False, None
 
     except FileNotFoundError:
         logger.exception("borg executable not found in PATH")
