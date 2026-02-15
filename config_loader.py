@@ -9,11 +9,15 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import yaml
 
 from errors import ConfigSyntaxError, ConfigValidationError
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+DEFAULT_CONFIG_NAME = "config.yaml"
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / DEFAULT_CONFIG_NAME
 
 DEFAULT_ARCHIVE_TEMPLATE = "{service}-{now:%Y-%m-%dT%H:%M:%S}"
 
@@ -23,15 +27,24 @@ def _ensure_type(value: Any, expected_type: type, path: str) -> None:
         raise ConfigValidationError(f"{path} must be of type {expected_type.__name__}")
 
 
-def _file_exists_readable(path: str, path_desc: str) -> None:
+def _file_exists_readable(path: str | Path, path_desc: str) -> None:
     p = Path(path)
     if not p.exists():
-        raise ConfigValidationError(f"{path_desc} '{path}' does not exist")
+        raise ConfigValidationError(f"{path_desc} '{p}' does not exist")
     if not os.access(p, os.R_OK):
-        raise ConfigValidationError(f"{path_desc} '{path}' is not readable")
+        raise ConfigValidationError(f"{path_desc} '{p}' is not readable")
 
 
-def load_config(path: str) -> Dict[str, Any]:
+def _resolve_config_path(path: Optional[str]) -> Path:
+    if path:
+        candidate = Path(path)
+        if candidate.is_absolute():
+            return candidate
+        return (PROJECT_ROOT / candidate).resolve()
+    return DEFAULT_CONFIG_PATH
+
+
+def load_config(path: Optional[str] = None) -> Dict[str, Any]:
     """Load and validate configuration YAML file.
 
     Parameters
@@ -51,12 +64,11 @@ def load_config(path: str) -> Dict[str, Any]:
     ConfigValidationError
         If the configuration fails validation checks.
     """
-    p = Path(path)
-    if not p.exists():
-        raise ConfigValidationError(f"Config file '{path}' does not exist")
+    config_path = _resolve_config_path(path)
+    _file_exists_readable(config_path, "config file")
 
     try:
-        with p.open("r", encoding="utf-8") as fh:
+        with config_path.open("r", encoding="utf-8") as fh:
             raw = yaml.safe_load(fh)
     except yaml.YAMLError as e:
         raise ConfigSyntaxError(f"YAML syntax error: {e}")
@@ -229,4 +241,22 @@ def load_config(path: str) -> Dict[str, Any]:
     normalized["borg"] = borg
     normalized["compression"] = compression
     normalized["storage_box"] = storage
+    normalized["_config_path"] = str(config_path)
+
+    # Validate Borg passphrase now that config path is known
+    get_borg_passphrase(normalized)
     return normalized
+
+
+def get_borg_passphrase(config: Dict[str, Any]) -> str:
+    borg_cfg = config.get("borg", {})
+    passphrase = borg_cfg.get("passphrase")
+    config_path = config.get("_config_path") or str(DEFAULT_CONFIG_PATH)
+
+    if passphrase is None:
+        raise ConfigValidationError(f"Missing borg.passphrase in '{config_path}'")
+    if not isinstance(passphrase, str) or not passphrase.strip():
+        raise ConfigValidationError(
+            f"borg.passphrase in '{config_path}' must be a non-empty string"
+        )
+    return passphrase

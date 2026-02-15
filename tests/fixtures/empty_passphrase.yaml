@@ -5,7 +5,7 @@ storage_box:
   ssh_key_path: tests/fixtures/dummy_key
   repo_path: /backups
 borg:
-  passphrase: "super-secret"
+  passphrase: ""
 services:
   - name: web
     compose_file: tests/fixtures/docker-compose.yml
