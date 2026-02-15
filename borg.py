@@ -25,29 +25,31 @@ logger = logging.getLogger(__name__)
 def _run_process_streaming_output(
     cmd: List[str],
     env: dict,
+    cwd: Optional[str] = None,
 ) -> Tuple[int, str]:
     """Run a subprocess while streaming its combined stdout/stderr to logs.
 
-    Why this exists:
-    - `subprocess.run(..., capture_output=True)` buffers *all* output until the
-      process exits. Borg (and the underlying ssh) often prints progress and
-      may print interactive prompts to stderr. Buffering can make long-running
-      operations appear "stuck" and can also hide prompts.
+    Args:
+        cmd: Borg command arguments.
+        env: Environment variables.
+        cwd: Optional working directory.
 
     Returns:
-        (return_code, combined_output_tail)
+        Tuple(return_code, output_tail).
     """
 
-    # Merge stderr into stdout so we don't deadlock and so prompts/progress are
-    # visible in a single stream.
-    proc = subprocess.Popen(
-        cmd,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
+    kwargs: Dict[str, Any] = {
+        "args": cmd,
+        "env": env,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        "text": True,
+        "bufsize": 1,
+    }
+    if cwd is not None:
+        kwargs["cwd"] = cwd
+
+    proc = subprocess.Popen(**kwargs)
 
     output_tail: List[str] = []
     tail_limit = 200  # lines
@@ -376,11 +378,12 @@ def build_borg_extract_command(
     repo_url = build_repo_url(config)
     repo_and_archive = f"{repo_url}::{archive_name}"
 
+    # Older borg versions do not support --target. Change working directory to
+    # the staging path before running borg extract so that files are extracted
+    # in the desired directory.
     cmd: List[str] = [
         "borg",
         "extract",
-        "--target",
-        target_dir,
         repo_and_archive,
     ]
     logger.debug("Built borg extract command: %s", cmd)
@@ -389,6 +392,13 @@ def build_borg_extract_command(
 
 def run_borg_extract(config: dict, archive_name: str, target_dir: str) -> bool:
     """Execute borg extract for archive -> target_dir."""
+
+    # DEBUG: Log the extraction parameters
+    logger.info(
+        "DEBUG: borg extract called with archive=%s, target_dir=%s",
+        archive_name,
+        target_dir,
+    )
 
     try:
         env = build_borg_environment(config)
@@ -399,7 +409,8 @@ def run_borg_extract(config: dict, archive_name: str, target_dir: str) -> bool:
     logger.info("Executing borg extract: %s", " ".join(shlex.quote(p) for p in cmd))
 
     try:
-        rc, tail = _run_process_streaming_output(cmd, env)
+        # Run borg extract with working directory set to target_dir.
+        rc, tail = _run_process_streaming_output(cmd, env, cwd=str(target_dir))
         if rc == 0:
             logger.info("borg extract succeeded: %s", archive_name)
             return True

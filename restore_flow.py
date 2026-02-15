@@ -52,6 +52,14 @@ def _prepare_staging_dir(path: Path, force: bool) -> None:
             raise RestoreError(
                 f"Staging directory {path} is not empty; use --force to overwrite"
             )
+        # DEBUG: Log contents when force=True and directory has content
+        if force and any(path.iterdir()):
+            contents = list(path.iterdir())
+            logger.warning(
+                "Staging directory %s has %d items (force=True, will proceed anyway)",
+                path,
+                len(contents),
+            )
     else:
         try:
             path.mkdir(parents=True, exist_ok=True)
@@ -149,6 +157,13 @@ def restore_service(
         logger.info("Finished restore for service: %s (result=FAIL)", service_name)
         return False
 
+    # DEBUG: Log staging directory contents before extraction
+    if staging_path.exists() and any(staging_path.iterdir()):
+        before_contents = list(staging_path.iterdir())
+        logger.info(
+            "Staging dir contents BEFORE extract: %d items", len(before_contents)
+        )
+
     extract_success = False
     try:
         extract_success = run_borg_extract(config, archive_name, str(staging_path))
@@ -157,6 +172,13 @@ def restore_service(
             "Unexpected error while running borg extract for %s", service_name
         )
         extract_success = False
+
+    # DEBUG: Log staging directory contents after extraction
+    if staging_path.exists():
+        after_contents = list(staging_path.iterdir())
+        logger.info("Staging dir contents AFTER extract: %d items", len(after_contents))
+        if not after_contents:
+            logger.warning("Staging directory is EMPTY after borg extract!")
 
     post_cmds = (
         restore_commands.get("post") if isinstance(restore_commands, dict) else None
