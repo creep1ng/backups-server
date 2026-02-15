@@ -18,11 +18,13 @@
 - Implement `borg create` for incremental snapshots without an intermediate tar file. [`docs/schedule.md`](docs/schedule.md:18)
 - Persist `last_success_archive` in local state.
 
-## Phase 3 — Remote listing (1–2 days)
+## Phase 3 — Remote listing (1–2 days) ✅ COMPLETE
 
-- Implement `list-remote` using `borg list --json` or `--format`. [`docs/schedule.md`](docs/schedule.md:23)
-- Implement `--service` filters and grouping `--group-by hostname` using the `hostname` metadata. [`docs/schedule.md`](docs/schedule.md:24)
-- Adjust output to be script-friendly (one line per snapshot or JSON).
+- Implemented `list-remote` using `borg list --json` (preferred) with TSV fallback format. See [`remote_listing.py`](remote_listing.py:1) and [`borg.py`](borg.py:222).
+- Implemented `--service` repeatable filter and `--group-by hostname` ordering using archive metadata.
+- Output is script-friendly by default: one snapshot per line (TSV format with fields: archive, time_utc, hostname, service, id_short).
+- JSON output mode available via `--json` flag with schema version 1 (see [`remote_listing.py`](remote_listing.py:16)).
+- Archives are sorted deterministically: service → hostname → time_utc → archive name.
 
 ## Phase 4 — Usable restore (2–4 days)
 

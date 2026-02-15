@@ -66,6 +66,33 @@ Usage and common workflows
 - Backup all services: `python backup_tool.py --config ./config.yaml.example backup`.
 - Backup single service: `python backup_tool.py --config ./config.yaml.example backup --service <service-name>`.
 
+### Listing remote archives
+
+The `list-remote` command lists archives stored in the remote Borg repository:
+
+```bash
+# List all archives (default TSV output, one per line)
+python backup_tool.py --config ./config.yaml.example list-remote
+
+# Filter by one or more services (repeatable)
+python backup_tool.py --config ./config.yaml.example list-remote --service nextcloud
+python backup_tool.py --config ./config.yaml.example list-remote --service nextcloud --service postgres
+
+# Group archives by hostname (affects JSON output structure)
+python backup_tool.py --config ./config.yaml.example list-remote --group-by hostname --json
+
+# Output as JSON (schema version 1)
+python backup_tool.py --config ./config.yaml.example list-remote --json
+```
+
+**Default output (TSV):** One archive per line with tab-separated fields: `archive`, `time_utc`, `hostname`, `service`, `id_short`. No headers or decorative output—designed for scripting and piping.
+
+**JSON output (`--json`):** Structured output with schema version 1, including `generated_at`, `group_by`, `service_filter`, `archives` array, and optional `groups` object when `--group-by hostname` is specified. See [`remote_listing.py`](remote_listing.py:369) for the full schema.
+
+**Filtering (`--service`):** Repeatable flag to filter archives by service name. Archives with unknown service names are excluded when filtering is active.
+
+**Grouping (`--group-by`):** Supports `service` (default) or `hostname`. When set to `hostname` with `--json`, archives are additionally organized into a `groups` object keyed by hostname. Archives are always sorted deterministically: service → hostname → time_utc → archive name.
+
 Hooks and state
 - Pre-hooks are executed before the snapshot (fail-fast). Provide `backup_commands.pre` as a list of shell commands in the service config.
 - Post-hooks are executed after the snapshot; they are attempted even if the borg snapshot failed. Provide `backup_commands.post` as a list of shell commands.
