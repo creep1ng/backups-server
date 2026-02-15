@@ -13,6 +13,9 @@ import shlex
 import subprocess
 from typing import List, Optional, Tuple
 
+from config_loader import get_borg_passphrase
+from errors import ConfigValidationError
+
 logger = logging.getLogger(__name__)
 
 
@@ -157,6 +160,12 @@ def run_borg_create(
 
     env = os.environ.copy()
     env["BORG_RSH"] = borg_rsh
+    try:
+        passphrase = get_borg_passphrase(config)
+    except ConfigValidationError as exc:
+        logger.error("Failed to retrieve borg passphrase: %s", exc)
+        return False, None
+    env["BORG_PASSPHRASE"] = passphrase
 
     logger.info("Executing borg create: %s", " ".join(shlex.quote(p) for p in cmd))
 

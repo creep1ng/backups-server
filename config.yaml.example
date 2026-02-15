@@ -60,38 +60,6 @@ compression:
 # See ./docs/configuration-syntax.md for detailed rules and examples.
 # ---------------------------------------------------------------------------
 services:
-  - name: "nextcloud"
-    # Path to the docker-compose YAML that describes the service
-    compose_file: "/srv/nextcloud/docker-compose.yml"
-
-    # Optional list of env files referenced by the compose project
-    env_files:
-      - "/srv/nextcloud/.env"
-
-    # Optional explicit host paths to include in the backup
-    extra_paths:
-      - "/srv/nextcloud/data"
-
-    # Optional backup hooks executed around the snapshot operation
-    backup_commands:
-      pre:
-        - "docker compose -f /srv/nextcloud/docker-compose.yml exec -T db sh -lc 'pg_dumpall -U postgres > /tmp/all.sql'"
-      post:
-        - "docker compose -f /srv/nextcloud/docker-compose.yml exec -T db sh -lc 'rm -f /tmp/all.sql'"
-
-    # Optional restore hooks
-    restore_commands:
-      pre: []
-      post: []
-
-    # Streams: for services that require streaming output into borg (no temp file)
-    streams:
-      - name: "db.sql"
-        # Use a list form for commands where possible (recommended). The
-        # implementation currently accepts shell-strings for hooks; streams
-        # should be an array form to avoid shell parsing ambiguity.
-        command: ["docker", "compose", "-f", "/srv/nextcloud/docker-compose.yml", "exec", "-T", "db", "pg_dumpall", "-U", "postgres"]
-
 # ---------------------------------------------------------------------------
 # Example minimal service with no hooks and no streams
 # ---------------------------------------------------------------------------

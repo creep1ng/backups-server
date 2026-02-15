@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from config_loader import load_config
+from config_loader import get_borg_passphrase, load_config
 from errors import ConfigSyntaxError, ConfigValidationError
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -34,9 +34,27 @@ def test_valid_minimal_config(tmp_path):
     assert isinstance(cfg["services"], list)
 
 
+def test_get_borg_passphrase(tmp_path):
+    _write_dummy_files()
+    cfg = load_config(str(FIXTURES / "valid_config.yaml"))
+    assert get_borg_passphrase(cfg) == cfg["borg"]["passphrase"]
+
+
 def test_invalid_yaml_syntax():
     with pytest.raises(ConfigSyntaxError):
         load_config(str(FIXTURES / "invalid_syntax.yaml"))
+
+
+def test_missing_borg_passphrase(tmp_path):
+    _write_dummy_files()
+    with pytest.raises(ConfigValidationError):
+        load_config(str(FIXTURES / "no_borg_passphrase.yaml"))
+
+
+def test_empty_borg_passphrase(tmp_path):
+    _write_dummy_files()
+    with pytest.raises(ConfigValidationError):
+        load_config(str(FIXTURES / "empty_passphrase.yaml"))
 
 
 def test_missing_required_fields():
