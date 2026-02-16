@@ -60,6 +60,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         action="store_true",
         help="Allow restoring into a non-empty staging directory",
     )
+    restore_p.add_argument(
+        "--force-restore",
+        action="store_true",
+        help="After extraction, copy staged data into production paths",
+    )
     snapshot_group = restore_p.add_mutually_exclusive_group(required=True)
     snapshot_group.add_argument("--snapshot", help="Snapshot/archive name to restore")
     snapshot_group.add_argument(
@@ -217,6 +222,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 archive_name,
                 args.staging_dir,
                 force=args.force,
+                force_restore=args.force_restore,
             )
         except restore_flow.RestoreError as exc:
             print(f"Restore failed: {exc}", file=sys.stderr)

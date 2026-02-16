@@ -104,8 +104,12 @@ python backup_tool.py --config ./config.yaml.example restore --service nextcloud
 # Restore the latest known snapshot for a service
 python backup_tool.py --config ./config.yaml.example restore --service nextcloud --latest --staging-dir /tmp/restore
 
-# Force restore into a non-empty staging directory
+# Force restore into a non-empty staging directory (bypasses empty check)
 python backup_tool.py --config ./config.yaml.example restore --service nextcloud --latest --staging-dir /tmp/restore --force
+
+# Force restore with automatic staging-to-production sync
+# This extracts AND copies files to production path (requires restore_paths config)
+python backup_tool.py --config ./config.yaml.example restore --service nextcloud --latest --staging-dir /tmp/restore --force-restore
 ```
 
 **Required arguments:**
@@ -113,19 +117,49 @@ python backup_tool.py --config ./config.yaml.example restore --service nextcloud
 - `--staging-dir`: Local directory where the archive contents will be extracted.
 - `--snapshot` OR `--latest`: Mutually exclusive. Specify either an exact archive name or request the latest available snapshot.
 
+**Optional arguments:**
+- `--force`: Allow restoring into a non-empty staging directory. Does NOT copy to production - only bypasses the staging directory emptiness check.
+- `--force-restore`: Extract AND automatically copy files from staging to the configured production path. Requires `restore_paths` to be set in the service config. Overwrites existing content in the destination.
+
 **Staging directory semantics:**
 - The staging directory is auto-created if it does not exist (including parent directories).
-- If the directory exists and is not empty, the restore fails unless `--force` is specified.
-- If the path exists but is not a directory, the restore fails regardless of `--force`.
+- If the directory exists and is not empty, the restore fails unless `--force` or `--force-restore` is specified.
+- If the path exists but is not a directory, the restore fails regardless of flags.
+
+**`--force` vs `--force-restore`:**
+- `--force`: Only bypasses the non-empty staging directory check. Files are extracted to staging only. User must handle copying to production via post-restore hooks or manual steps.
+- `--force-restore`: In addition to extracting to staging, automatically mirrors the extracted content to the production path defined in `restore_paths`, overwriting existing content. Requires `restore_paths` configuration.
 
 **`--latest` resolution logic:**
-1. Prefer local state: if a `last_success_archive` is recorded for the service, use it (after validating it exists in the repository).
-2. Fall back to remote listing: query `borg list` and select the newest archive by timestamp.
-3. Deterministic tie-breaking: when multiple archives share the same timestamp, the lexicographically smaller archive name is selected.
+1. **Prefer local state**: If a `last_success_archive` is recorded for the service in the local state store (`.backup-state/{service}.json`), use that archive name.
+2. **Validate against remote**: Verify the local state archive still exists in the remote repository.
+3. **Fallback to remote listing**: If local state is missing or the archive no longer exists, query `borg list` and select the newest archive by timestamp.
+4. **Deterministic tie-breaking**: When multiple archives share the same timestamp, the lexicographically smaller archive name is selected.
 
 **Restore hooks:**
 - `restore_commands.pre`: Executed before `borg extract`. If any pre-hook fails, the restore aborts immediately.
 - `restore_commands.post`: Executed after `borg extract`. Post-hooks run even if the extraction failed; failures are logged but do not affect the overall restore status.
+- **Hook variables** (when `restore_paths` is configured):
+  - `${STAGING_PATH}`: Resolved staging path (staging dir + relative path from archive)
+  - `${PRODUCTION_PATH}`: Absolute production path from the mapping
+  - These variables are both substituted in command strings AND exported to the subprocess environment.
+
+**Example restore workflow with hooks:**
+```yaml
+services:
+  - name: "nextcloud"
+    compose_file: "/srv/nextcloud/docker-compose.yml"
+    restore_paths: "var/lib/docker/volumes/nextcloud_data/_data -> /var/lib/docker/volumes/nextcloud_data/_data"
+    restore_commands:
+      pre:
+        # Stop the service before restoring
+        - "docker compose -f /srv/nextcloud/docker-compose.yml down"
+      post:
+        # Restart the service after restore
+        - "docker compose -f /srv/nextcloud/docker-compose.yml up -d"
+        # Verify service is running
+        - "docker compose -f /srv/nextcloud/docker-compose.yml ps"
+```
 
 Hooks and state
 - Pre-hooks are executed before the snapshot (fail-fast). Provide `backup_commands.pre` as a list of shell commands in the service config.

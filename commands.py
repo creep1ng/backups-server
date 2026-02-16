@@ -11,8 +11,9 @@ Functions
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 DEFAULT_TIMEOUT_SECONDS = 300
 
@@ -20,7 +21,9 @@ logger = logging.getLogger(__name__)
 
 
 def run_command(
-    command: str, timeout: int = DEFAULT_TIMEOUT_SECONDS
+    command: str,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+    env: Dict[str, str] | None = None,
 ) -> Tuple[int, str, str]:
     """Execute a single shell command.
 
@@ -39,12 +42,16 @@ def run_command(
     """
     try:
         logger.debug("Running command (shell): %s", command)
+        env_vars = os.environ.copy()
+        if env:
+            env_vars.update(env)
         proc = subprocess.run(
             command,
             shell=True,
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=env_vars,
         )
         return proc.returncode, proc.stdout or "", proc.stderr or ""
     except (
@@ -65,7 +72,24 @@ def run_command(
         return -1, "", str(exc)
 
 
-def run_hooks(commands: List[str], phase: str) -> bool:
+def _apply_substitutions(command: str, substitutions: Dict[str, str] | None) -> str:
+    if not substitutions:
+        return command
+
+    result = command
+    for key, value in substitutions.items():
+        placeholder = f"${{{key}}}"
+        if placeholder in result:
+            result = result.replace(placeholder, value)
+    return result
+
+
+def run_hooks(
+    commands: List[str],
+    phase: str,
+    substitutions: Dict[str, str] | None = None,
+    env: Dict[str, str] | None = None,
+) -> bool:
     """Run a sequence of shell commands for a hook phase.
 
     This will execute commands sequentially and stop at the first
@@ -93,10 +117,15 @@ def run_hooks(commands: List[str], phase: str) -> bool:
     logger.info("Running %s-hook commands: count=%d", phase, len(commands))
 
     for idx, cmd in enumerate(commands, start=1):
+        resolved_cmd = _apply_substitutions(cmd, substitutions)
         logger.info(
-            "[%s-hook][%d/%d] Executing command: %s", phase, idx, len(commands), cmd
+            "[%s-hook][%d/%d] Executing command: %s",
+            phase,
+            idx,
+            len(commands),
+            resolved_cmd,
         )
-        rc, out, err = run_command(cmd)
+        rc, out, err = run_command(resolved_cmd, env=env)
         # Log outputs at debug level for audit/diagnostics
         if out:
             logger.debug("Command stdout (phase=%s): %s", phase, out)

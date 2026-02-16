@@ -393,9 +393,8 @@ def build_borg_extract_command(
 def run_borg_extract(config: dict, archive_name: str, target_dir: str) -> bool:
     """Execute borg extract for archive -> target_dir."""
 
-    # DEBUG: Log the extraction parameters
-    logger.info(
-        "DEBUG: borg extract called with archive=%s, target_dir=%s",
+    logger.debug(
+        "borg extract called with archive=%s, target_dir=%s",
         archive_name,
         target_dir,
     )

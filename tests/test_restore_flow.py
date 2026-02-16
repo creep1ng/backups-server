@@ -49,7 +49,9 @@ def test_restore_hooks_execute_in_order(monkeypatch, tmp_path: Path) -> None:
     cfg = _service_config("svc")
     calls: list[str] = []
 
-    def fake_run_hooks(cmds: list[str], phase: str) -> bool:
+    def fake_run_hooks(
+        cmds: list[str], phase: str, substitutions=None, env=None
+    ) -> bool:
         calls.append(phase)
         services = cast(list[dict[str, object]], cfg["services"])
         svc_config = services[0]
@@ -75,7 +77,9 @@ def test_pre_hook_failure_aborts_restore(monkeypatch, tmp_path: Path) -> None:
     cfg = _service_config("svc")
     called: list[str] = []
 
-    def fake_run_hooks(cmds: list[str], phase: str) -> bool:
+    def fake_run_hooks(
+        cmds: list[str], phase: str, substitutions=None, env=None
+    ) -> bool:
         called.append(phase)
         return phase != "pre"
 
@@ -97,7 +101,9 @@ def test_post_hook_failure_reports_error(monkeypatch, tmp_path: Path) -> None:
     cfg = _service_config("svc")
     calls: list[str] = []
 
-    def fake_run_hooks(cmds: list[str], phase: str) -> bool:
+    def fake_run_hooks(
+        cmds: list[str], phase: str, substitutions=None, env=None
+    ) -> bool:
         calls.append(phase)
         return phase != "post"
 
@@ -213,7 +219,9 @@ def test_restore_handles_missing_archive(monkeypatch, tmp_path: Path) -> None:
     cfg = _service_config("svc")
     calls: list[str] = []
 
-    def fake_run_hooks(cmds: list[str], phase: str) -> bool:
+    def fake_run_hooks(
+        cmds: list[str], phase: str, substitutions=None, env=None
+    ) -> bool:
         calls.append(phase)
         return True
 
@@ -232,12 +240,77 @@ def test_restore_handles_missing_archive(monkeypatch, tmp_path: Path) -> None:
     assert calls == ["pre", "extract", "post"]
 
 
+def test_force_restore_requires_mapping(monkeypatch, tmp_path: Path) -> None:
+    cfg = _service_config("svc")
+    staging = tmp_path / "staging"
+    staging.mkdir(parents=True)
+
+    monkeypatch.setattr(
+        restore_flow,
+        "run_hooks",
+        lambda cmds, phase, substitutions=None, env=None: True,
+    )
+    monkeypatch.setattr(restore_flow, "run_borg_extract", lambda *args, **kwargs: True)
+
+    with pytest.raises(restore_flow.RestoreError) as exc_info:
+        restore_flow.restore_service(
+            cfg,
+            "svc",
+            "svc-2026",
+            str(staging),
+            force=True,
+            force_restore=True,
+        )
+    assert "restore_paths" in str(exc_info.value)
+
+
+def test_force_restore_mirrors_into_production(monkeypatch, tmp_path: Path) -> None:
+    cfg = _service_config("svc")
+    service = cast(list[dict[str, object]], cfg["services"])[0]
+    relative = "backup/data"
+    production = tmp_path / "prod"
+    (production / "old").mkdir(parents=True)
+    (production / "old" / "file").write_text("old")
+    service["_restore_path_mapping"] = {
+        "relative": relative,
+        "production": str(production),
+    }
+
+    staging = tmp_path / "stage"
+    staging_rel = staging / relative
+    staging_rel.mkdir(parents=True)
+    (staging_rel / "newfile").write_text("new")
+
+    monkeypatch.setattr(
+        restore_flow,
+        "run_hooks",
+        lambda cmds, phase, substitutions=None, env=None: True,
+    )
+    monkeypatch.setattr(restore_flow, "run_borg_extract", lambda *args, **kwargs: True)
+
+    ok = restore_flow.restore_service(
+        cfg,
+        "svc",
+        "svc-2026",
+        str(staging),
+        force=True,
+        force_restore=True,
+    )
+    assert ok
+    assert (production / "old").exists() is False
+    assert (production / "newfile").read_text() == "new"
+
+
 def test_restore_handles_invalid_staging_path(monkeypatch, tmp_path: Path) -> None:
     cfg = _service_config("svc")
     staging = tmp_path / "staging"
     staging.write_text("not a dir")
 
-    monkeypatch.setattr(restore_flow, "run_hooks", lambda cmds, phase: True)
+    monkeypatch.setattr(
+        restore_flow,
+        "run_hooks",
+        lambda cmds, phase, substitutions=None, env=None: True,
+    )
     called: list[str] = []
 
     def fake_extract(*args, **kwargs) -> bool:

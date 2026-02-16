@@ -8,6 +8,7 @@ Provides the steps needed to execute restoration of a single service using
 from __future__ import annotations
 
 import logging
+import shutil
 from pathlib import Path
 from typing import Any, Dict
 
@@ -52,14 +53,6 @@ def _prepare_staging_dir(path: Path, force: bool) -> None:
             raise RestoreError(
                 f"Staging directory {path} is not empty; use --force to overwrite"
             )
-        # DEBUG: Log contents when force=True and directory has content
-        if force and any(path.iterdir()):
-            contents = list(path.iterdir())
-            logger.warning(
-                "Staging directory %s has %d items (force=True, will proceed anyway)",
-                path,
-                len(contents),
-            )
     else:
         try:
             path.mkdir(parents=True, exist_ok=True)
@@ -68,6 +61,46 @@ def _prepare_staging_dir(path: Path, force: bool) -> None:
             raise RestoreError(
                 f"Unable to prepare staging directory {path}: {exc}"
             ) from exc
+
+
+def _clear_directory(path: Path) -> None:
+    for child in list(path.iterdir()):
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
+def _copy_recursive(source: Path, destination: Path) -> None:
+    if source.is_dir():
+        destination.mkdir(parents=True, exist_ok=True)
+        for item in source.iterdir():
+            _copy_recursive(item, destination / item.name)
+    else:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+
+
+def _mirror_staging_to_production(source: Path, destination: Path) -> None:
+    if not source.exists():
+        raise RestoreError(
+            f"Expected staging source '{source}' does not exist; cannot force restore"
+        )
+
+    if destination.exists():
+        if destination.is_file():
+            raise RestoreError(
+                f"Production path '{destination}' exists as file; expected directory"
+            )
+        _clear_directory(destination)
+    else:
+        destination.mkdir(parents=True, exist_ok=True)
+
+    if source.is_dir():
+        for item in source.iterdir():
+            _copy_recursive(item, destination / item.name)
+    else:
+        _copy_recursive(source, destination / source.name)
 
 
 def resolve_latest_archive_name(config: Dict[str, Any], service_name: str) -> str:
@@ -126,6 +159,7 @@ def restore_service(
     archive_name: str,
     staging_dir: str,
     force: bool = False,
+    force_restore: bool = False,
 ) -> bool:
     """Restore the requested archive into the staging directory."""
 
@@ -133,12 +167,35 @@ def restore_service(
     logger.info("Starting restore for service: %s", service_name)
 
     restore_commands = service_config.get("restore_commands") or {}
+    mapping = service_config.get("_restore_path_mapping")
+    if force_restore and not mapping:
+        raise RestoreError(
+            f"Force restore requires a 'restore_paths' mapping for service '{service_name}'"
+        )
+
+    staging_source_path: Path | None = None
+    production_path: Path | None = None
+    substitutions: dict[str, str] | None = None
+    hooks_env: dict[str, str] | None = None
+    if mapping:
+        staging_source_path = Path(staging_dir) / mapping["relative"]
+        production_path = Path(mapping["production"])
+        substitutions = {
+            "STAGING_PATH": str(staging_source_path),
+            "PRODUCTION_PATH": str(production_path),
+        }
+        hooks_env = substitutions.copy()
     pre_cmds = (
         restore_commands.get("pre") if isinstance(restore_commands, dict) else None
     )
     logger.info("Running pre-restore hooks for service: %s", service_name)
     try:
-        ok_pre = run_hooks(pre_cmds or [], "pre")
+        ok_pre = run_hooks(
+            pre_cmds or [],
+            "pre",
+            substitutions=substitutions,
+            env=hooks_env,
+        )
     except Exception:
         logger.exception(
             "Unexpected error while running restore pre-hooks for %s", service_name
@@ -157,13 +214,6 @@ def restore_service(
         logger.info("Finished restore for service: %s (result=FAIL)", service_name)
         return False
 
-    # DEBUG: Log staging directory contents before extraction
-    if staging_path.exists() and any(staging_path.iterdir()):
-        before_contents = list(staging_path.iterdir())
-        logger.info(
-            "Staging dir contents BEFORE extract: %d items", len(before_contents)
-        )
-
     extract_success = False
     try:
         extract_success = run_borg_extract(config, archive_name, str(staging_path))
@@ -173,19 +223,31 @@ def restore_service(
         )
         extract_success = False
 
-    # DEBUG: Log staging directory contents after extraction
-    if staging_path.exists():
-        after_contents = list(staging_path.iterdir())
-        logger.info("Staging dir contents AFTER extract: %d items", len(after_contents))
-        if not after_contents:
-            logger.warning("Staging directory is EMPTY after borg extract!")
+    copy_success = True
+    if extract_success and force_restore:
+        assert staging_source_path is not None and production_path is not None
+        try:
+            logger.info(
+                "Force restore mirroring '%s' -> '%s'",
+                staging_source_path,
+                production_path,
+            )
+            _mirror_staging_to_production(staging_source_path, production_path)
+        except RestoreError as exc:
+            logger.error("Force restore sync failed: %s", exc)
+            copy_success = False
 
     post_cmds = (
         restore_commands.get("post") if isinstance(restore_commands, dict) else None
     )
     logger.info("Running post-restore hooks for service: %s", service_name)
     try:
-        ok_post = run_hooks(post_cmds or [], "post")
+        ok_post = run_hooks(
+            post_cmds or [],
+            "post",
+            substitutions=substitutions,
+            env=hooks_env,
+        )
     except Exception:
         logger.exception(
             "Unexpected error while running restore post-hooks for %s", service_name
@@ -194,7 +256,7 @@ def restore_service(
     if not ok_post:
         logger.error("One or more post-restore hooks failed for %s", service_name)
 
-    result = extract_success and ok_post
+    result = extract_success and ok_post and copy_success
     logger.info(
         "Finished restore for service: %s (result=%s)",
         service_name,

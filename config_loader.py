@@ -44,6 +44,34 @@ def _resolve_config_path(path: Optional[str]) -> Path:
     return DEFAULT_CONFIG_PATH
 
 
+def parse_restore_path_mapping(value: Any, context: str) -> tuple[str, str]:
+    if not isinstance(value, str):
+        raise ConfigValidationError(
+            f"{context} must be a string formatted as '<relative> -> <absolute>'"
+        )
+
+    parts = value.split("->")
+    if len(parts) != 2:
+        raise ConfigValidationError(
+            f"{context} must contain a single '->' separating the staging relative path and the production path"
+        )
+
+    relative = parts[0].strip()
+    production = parts[1].strip()
+
+    if not relative:
+        raise ConfigValidationError(f"{context} relative staging path is empty")
+    if Path(relative).is_absolute():
+        raise ConfigValidationError(f"{context} relative path must not be absolute")
+
+    if not production:
+        raise ConfigValidationError(f"{context} production path is empty")
+    if not Path(production).is_absolute():
+        raise ConfigValidationError(f"{context} production path must be absolute")
+
+    return relative, production
+
+
 def load_config(path: Optional[str] = None) -> Dict[str, Any]:
     """Load and validate configuration YAML file.
 
@@ -235,6 +263,16 @@ def load_config(path: Optional[str] = None) -> Dict[str, Any]:
                     raise ConfigValidationError(
                         f"{svc_path}.streams[{sidx}].command must be a list of strings"
                     )
+
+        restore_paths_value = svc.get("restore_paths")
+        if restore_paths_value is not None:
+            relative, production = parse_restore_path_mapping(
+                restore_paths_value, f"{svc_path}.restore_paths"
+            )
+            svc["_restore_path_mapping"] = {
+                "relative": relative,
+                "production": production,
+            }
 
     # All checks passed; return normalized config
     normalized = raw.copy()

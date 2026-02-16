@@ -10,7 +10,7 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            "args": "--config config.yaml backup --all"
+            "args": "--config ./config.yaml restore --service kilocode-codebase-indexing --snapshot latest --staging-dir /tmp/restore --force"
         }
     ]
 }

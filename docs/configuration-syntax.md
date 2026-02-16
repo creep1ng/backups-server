@@ -97,6 +97,13 @@ services:
       - name: "db.sql"
         command: ["docker", "compose", "-f", "/srv/nextcloud/docker-compose.yml", "exec", "-T", "db", "pg_dumpall", "-U", "user"]
 
+    # Restore paths: defines staging and production paths for automatic restore.
+    # Syntax: "<relative_path_in_archive> -> <absolute_production_path>"
+    # When restore_paths is configured, ${STAGING_PATH} and ${PRODUCTION_PATH}
+    # are available in hooks (both substituted in command strings and exported
+    # to the subprocess environment).
+    restore_paths: "var/lib/docker/volumes/nextcloud_data/_data -> /var/lib/docker/volumes/nextcloud_data/_data"
+
 ```
 
 Validations:
@@ -112,6 +119,85 @@ Validations:
 - `streams` optional:
     - Each stream defines `name` (str) and `command` (list[str]).
     - The implementation should map each stream to `borg create --content-from-command` to avoid truncated dumps and to prevent out-of-space from temporary files. [`docs/configuration-syntax.md`](docs/configuration-syntax.md:112)
+- `restore_paths` optional:
+    - A single mapping string in the form `"<relative_path_in_archive> -> <absolute_production_path>"`.
+    - When configured with `--force-restore`, the extracted files are automatically mirrored from the staging directory into the production path, overwriting existing content.
+    - When not configured, users must handle the staging→production copy manually via post-restore hooks.
+    - **Hook variables**: When `restore_paths` is configured, two environment variables are available:
+      - `${STAGING_PATH}`: Resolved staging path (e.g., `${staging_dir}/var/lib/docker/volumes/...`)
+      - `${PRODUCTION_PATH}: The absolute production path from the mapping.
+      - These variables are both substituted in command strings AND exported to the subprocess environment.
+
+## Hook Examples
+
+### Backup Pre-Hook: Stop a service before backup
+```yaml
+services:
+  - name: "postgres"
+    compose_file: "/srv/postgres/docker-compose.yml"
+    backup_commands:
+      pre:
+        - "docker compose -f /srv/postgres/docker-compose.yml stop db"
+      post:
+        - "docker compose -f /srv/postgres/docker-compose.yml start db"
+```
+
+### Backup Post-Hook: Verify backup integrity
+```yaml
+services:
+  - name: "myapp"
+    compose_file: "/srv/myapp/docker-compose.yml"
+    backup_commands:
+      post:
+        - "echo 'Backup completed successfully'"
+        - "du -sh /path/to/backup/destination"
+```
+
+### Restore Pre-Hook: Stop service before restore
+```yaml
+services:
+  - name: "nextcloud"
+    compose_file: "/srv/nextcloud/docker-compose.yml"
+    restore_commands:
+      pre:
+        - "docker compose -f /srv/nextcloud/docker-compose.yml down"
+```
+
+### Restore Post-Hook: Restart service and verify
+```yaml
+services:
+  - name: "nextcloud"
+    compose_file: "/srv/nextcloud/docker-compose.yml"
+    restore_commands:
+      post:
+        - "docker compose -f /srv/nextcloud/docker-compose.yml up -d"
+        - "sleep 5 && docker compose -f /srv/nextcloud/docker-compose.yml ps"
+```
+
+### Restore with Variable Substitution
+When `restore_paths` is configured, hooks can reference the resolved paths:
+```yaml
+services:
+  - name: "postgres"
+    compose_file: "/srv/postgres/docker-compose.yml"
+    restore_paths: "var/lib/postgresql/data -> /var/lib/postgresql/data"
+    restore_commands:
+      # Using variable substitution in command strings
+      post:
+        - "chown -R postgres:postgres ${PRODUCTION_PATH}"
+        - "chmod 0700 ${PRODUCTION_PATH}"
+```
+
+### Restore Post-Hook: Copy from staging to production (manual)
+If not using `--force-restore`, you can manually copy files in a post-hook:
+```yaml
+services:
+  - name: "myapp"
+    compose_file: "/srv/myapp/docker-compose.yml"
+    restore_commands:
+      post:
+        - "cp -a ${STAGING_PATH}/. /production/path/"
+```
 
 ## Minimal full example
 
@@ -139,7 +225,12 @@ services:
     env_files: ["/srv/nextcloud/.env"]
     extra_paths: []
     backup_commands: { pre: [], post: [] }
-    restore_commands: { pre: [], post: [] }
+    restore_commands:
+      pre:
+        - "docker compose -f /srv/nextcloud/docker-compose.yml down"
+      post:
+        - "docker compose -f /srv/nextcloud/docker-compose.yml up -d"
+    restore_paths: "var/lib/docker/volumes/nextcloud_data/_data -> /var/lib/docker/volumes/nextcloud_data/_data"
     streams: []
 
 ```
