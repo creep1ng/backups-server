@@ -121,6 +121,12 @@ python backup_tool.py --config ./config.yaml.example restore --service nextcloud
 - `--force`: Allow restoring into a non-empty staging directory. Does NOT copy to production - only bypasses the staging directory emptiness check.
 - `--force-restore`: Extract AND automatically copy files from staging to the configured production path. Requires `restore_paths` to be set in the service config. Overwrites existing content in the destination.
 
+**restore_paths syntax options:**
+- **Volume name only** (simplified): `"ollama_data"` - auto-resolves to Docker volume mountpoint
+- **Volume with path**: `"ollama_data -> /custom/path"` - volume name with explicit production path  
+- **Explicit mapping**: `"var/lib/... -> /production/path"` - full relative and absolute paths
+- **$PRODUCTION_PATH**: `"relative/path -> $PRODUCTION_PATH"` - production equals staging path
+
 **Staging directory semantics:**
 - The staging directory is auto-created if it does not exist (including parent directories).
 - If the directory exists and is not empty, the restore fails unless `--force` or `--force-restore` is specified.
@@ -149,7 +155,8 @@ python backup_tool.py --config ./config.yaml.example restore --service nextcloud
 services:
   - name: "nextcloud"
     compose_file: "/srv/nextcloud/docker-compose.yml"
-    restore_paths: "var/lib/docker/volumes/nextcloud_data/_data -> /var/lib/docker/volumes/nextcloud_data/_data"
+    # Simplified: just use volume name - paths are auto-resolved
+    restore_paths: "nextcloud_data"
     restore_commands:
       pre:
         # Stop the service before restoring
@@ -159,6 +166,20 @@ services:
         - "docker compose -f /srv/nextcloud/docker-compose.yml up -d"
         # Verify service is running
         - "docker compose -f /srv/nextcloud/docker-compose.yml ps"
+```
+
+**Alternative: Explicit path mapping:**
+```yaml
+services:
+  - name: "nextcloud"
+    compose_file: "/srv/nextcloud/docker-compose.yml"
+    # Full explicit syntax
+    restore_paths: "var/lib/docker/volumes/nextcloud_data/_data -> /var/lib/docker/volumes/nextcloud_data/_data"
+    restore_commands:
+      pre:
+        - "docker compose -f /srv/nextcloud/docker-compose.yml down"
+      post:
+        - "docker compose -f /srv/nextcloud/docker-compose.yml up -d"
 ```
 
 Hooks and state

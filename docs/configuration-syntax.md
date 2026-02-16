@@ -98,11 +98,24 @@ services:
         command: ["docker", "compose", "-f", "/srv/nextcloud/docker-compose.yml", "exec", "-T", "db", "pg_dumpall", "-U", "user"]
 
     # Restore paths: defines staging and production paths for automatic restore.
-    # Syntax: "<relative_path_in_archive> -> <absolute_production_path>"
+    # Supports multiple formats:
+    #
+    # 1. Volume name only (simplified) - auto-resolves to Docker volume mountpoint:
+    #    restore_paths: "ollama_data"
+    #
+    # 2. Volume name with explicit production path:
+    #    restore_paths: "ollama_data -> /custom/path"
+    #
+    # 3. Explicit relative -> absolute path (original format):
+    #    restore_paths: "var/lib/docker/volumes/nextcloud_data/_data -> /var/lib/docker/volumes/nextcloud_data/_data"
+    #
+    # 4. Use $PRODUCTION_PATH variable (production = staging path):
+    #    restore_paths: "var/lib/docker/volumes/nextcloud_data/_data -> $PRODUCTION_PATH"
+    #
     # When restore_paths is configured, ${STAGING_PATH} and ${PRODUCTION_PATH}
     # are available in hooks (both substituted in command strings and exported
     # to the subprocess environment).
-    restore_paths: "var/lib/docker/volumes/nextcloud_data/_data -> /var/lib/docker/volumes/nextcloud_data/_data"
+    restore_paths: "ollama_data"
 
 ```
 
@@ -120,12 +133,16 @@ Validations:
     - Each stream defines `name` (str) and `command` (list[str]).
     - The implementation should map each stream to `borg create --content-from-command` to avoid truncated dumps and to prevent out-of-space from temporary files. [`docs/configuration-syntax.md`](docs/configuration-syntax.md:112)
 - `restore_paths` optional:
-    - A single mapping string in the form `"<relative_path_in_archive> -> <absolute_production_path>"`.
+    - A single mapping string with several supported formats:
+      - **Volume name only** (simplified): `"volume_name"` - auto-resolves to Docker volume host mountpoint using the compose project name.
+      - **Volume with production**: `"volume_name -> /production/path"` - volume name with explicit production path.
+      - **Explicit mapping**: `"relative_path -> /production/path"` - full relative and absolute paths (original format).
+      - **Variable production**: `"relative_path -> $PRODUCTION_PATH"` - use staging path as production (useful when archive and production paths are the same).
     - When configured with `--force-restore`, the extracted files are automatically mirrored from the staging directory into the production path, overwriting existing content.
     - When not configured, users must handle the staging→production copy manually via post-restore hooks.
     - **Hook variables**: When `restore_paths` is configured, two environment variables are available:
       - `${STAGING_PATH}`: Resolved staging path (e.g., `${staging_dir}/var/lib/docker/volumes/...`)
-      - `${PRODUCTION_PATH}: The absolute production path from the mapping.
+      - `${PRODUCTION_PATH}`: The absolute production path from the mapping (or staging path if `$PRODUCTION_PATH` was used).
       - These variables are both substituted in command strings AND exported to the subprocess environment.
 
 ## Hook Examples
@@ -188,6 +205,29 @@ services:
         - "chmod 0700 ${PRODUCTION_PATH}"
 ```
 
+### Restore with Simplified Volume Syntax
+Use just the volume name for automatic path resolution:
+```yaml
+services:
+  - name: "ollama"
+    compose_file: "/srv/ollama/docker-compose.yml"
+    # Simplified: just specify volume name, paths are auto-resolved
+    restore_paths: "ollama_data"
+    restore_commands:
+      post:
+        - "chown -R 1000:1000 ${PRODUCTION_PATH}"
+```
+
+### Restore with $PRODUCTION_PATH Variable
+Use `$PRODUCTION_PATH` when the production path should be the same as the staging extraction path:
+```yaml
+services:
+  - name: "myapp"
+    compose_file: "/srv/myapp/docker-compose.yml"
+    # Production path equals staging path - useful for direct volume restores
+    restore_paths: "var/lib/docker/volumes/myapp_data/_data -> $PRODUCTION_PATH"
+```
+
 ### Restore Post-Hook: Copy from staging to production (manual)
 If not using `--force-restore`, you can manually copy files in a post-hook:
 ```yaml
@@ -230,7 +270,7 @@ services:
         - "docker compose -f /srv/nextcloud/docker-compose.yml down"
       post:
         - "docker compose -f /srv/nextcloud/docker-compose.yml up -d"
-    restore_paths: "var/lib/docker/volumes/nextcloud_data/_data -> /var/lib/docker/volumes/nextcloud_data/_data"
+    restore_paths: "nextcloud_data"
     streams: []
 
 ```
