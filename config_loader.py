@@ -8,6 +8,7 @@ the schema defined in docs/configuration-syntax.md.
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -20,6 +21,41 @@ DEFAULT_CONFIG_NAME = "config.yaml"
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / DEFAULT_CONFIG_NAME
 
 DEFAULT_ARCHIVE_TEMPLATE = "{service}-{now:%Y-%m-%dT%H:%M:%S}"
+
+
+def _resolve_docker_volume(volume_name: str, compose_file: str) -> str | None:
+    """Resolve a Docker volume name to its host mount path.
+
+    Args:
+        volume_name: The name of the Docker volume (may be short name or with prefix).
+        compose_file: Path to the compose file to determine the project name.
+
+    Returns:
+        The absolute host mount path, or None if the volume cannot be resolved.
+    """
+    # Extract project name from compose file directory
+    compose_dir = os.path.dirname(os.path.abspath(compose_file))
+    compose_project = os.path.basename(compose_dir)
+
+    # Build list of volume names to try (short name first, then with project prefix)
+    names_to_try = [volume_name]
+    if compose_project and not volume_name.startswith(compose_project):
+        names_to_try.append(f"{compose_project}_{volume_name}")
+
+    for name in names_to_try:
+        try:
+            result = subprocess.run(
+                ["docker", "volume", "inspect", "-f", "{{.Mountpoint}}", name],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            mountpoint = result.stdout.strip()
+            if mountpoint:
+                return mountpoint
+        except subprocess.CalledProcessError:
+            pass
+    return None
 
 
 def _ensure_type(value: Any, expected_type: type, path: str) -> None:
@@ -44,11 +80,52 @@ def _resolve_config_path(path: Optional[str]) -> Path:
     return DEFAULT_CONFIG_PATH
 
 
-def parse_restore_path_mapping(value: Any, context: str) -> tuple[str, str]:
+def parse_restore_path_mapping(
+    value: Any, context: str, compose_file: str | None = None
+) -> tuple[str, str]:
+    """Parse restore_paths configuration with support for simplified syntax.
+
+    Supported formats:
+    - "volume_name" : Auto-resolve volume to host path (requires compose_file)
+    - "volume_name -> /production/path" : Volume name with explicit production path
+    - "relative/path -> /production/path" : Explicit relative and production paths
+    - "relative/path -> $PRODUCTION_PATH" : Use $PRODUCTION_PATH as production (resolved later)
+
+    Args:
+        value: The restore_paths string value from config.
+        context: Path context for error messages.
+        compose_file: Optional path to compose file for volume name resolution.
+
+    Returns:
+        Tuple of (relative_path, production_path).
+    """
     if not isinstance(value, str):
         raise ConfigValidationError(
             f"{context} must be a string formatted as '<relative> -> <absolute>'"
         )
+
+    value = value.strip()
+
+    # Handle simplified syntax: just a volume name (no arrow)
+    if "->" not in value:
+        # It's a volume name - resolve to Docker volume mountpoint
+        if not compose_file:
+            raise ConfigValidationError(
+                f"{context} with just a volume name requires 'compose_file' to be set"
+            )
+        volume_name = value
+        mountpoint = _resolve_docker_volume(volume_name, compose_file)
+        if not mountpoint:
+            raise ConfigValidationError(
+                f"{context}: could not resolve Docker volume '{volume_name}'"
+            )
+        # Construct the relative path as it would appear in the archive
+        compose_dir = os.path.dirname(os.path.abspath(compose_file))
+        compose_project = os.path.basename(compose_dir)
+        # Try with project prefix first, then without
+        prefixed_name = f"{compose_project}_{volume_name}"
+        relative_path = f"var/lib/docker/volumes/{prefixed_name}/_data"
+        return relative_path, mountpoint
 
     parts = value.split("->")
     if len(parts) != 2:
@@ -66,6 +143,12 @@ def parse_restore_path_mapping(value: Any, context: str) -> tuple[str, str]:
 
     if not production:
         raise ConfigValidationError(f"{context} production path is empty")
+
+    # Handle $PRODUCTION_PATH variable - mark it for later resolution
+    if production == "$PRODUCTION_PATH":
+        # Return special marker - will be resolved at restore time
+        return relative, "$PRODUCTION_PATH"
+
     if not Path(production).is_absolute():
         raise ConfigValidationError(f"{context} production path must be absolute")
 
@@ -267,7 +350,9 @@ def load_config(path: Optional[str] = None) -> Dict[str, Any]:
         restore_paths_value = svc.get("restore_paths")
         if restore_paths_value is not None:
             relative, production = parse_restore_path_mapping(
-                restore_paths_value, f"{svc_path}.restore_paths"
+                restore_paths_value,
+                f"{svc_path}.restore_paths",
+                svc.get("compose_file"),
             )
             svc["_restore_path_mapping"] = {
                 "relative": relative,

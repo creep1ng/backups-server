@@ -179,7 +179,12 @@ def restore_service(
     hooks_env: dict[str, str] | None = None
     if mapping:
         staging_source_path = Path(staging_dir) / mapping["relative"]
-        production_path = Path(mapping["production"])
+        production_str = mapping["production"]
+        # Handle $PRODUCTION_PATH variable - resolve to staging source path
+        if production_str == "$PRODUCTION_PATH":
+            production_path = staging_source_path
+        else:
+            production_path = Path(production_str)
         substitutions = {
             "STAGING_PATH": str(staging_source_path),
             "PRODUCTION_PATH": str(production_path),
